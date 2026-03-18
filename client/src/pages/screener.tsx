@@ -169,10 +169,10 @@ export default function Screener() {
     if (dPriceMin) result = result.filter(s => s.price >= Number(dPriceMin));
     if (dPriceMax) result = result.filter(s => s.price <= Number(dPriceMax));
     if (dMfiRange[0] > 0 || dMfiRange[1] < 100) {
-      result = result.filter(s => s.mfi14 >= dMfiRange[0] && s.mfi14 <= dMfiRange[1]);
+      result = result.filter(s => (s.mfi14 ?? 50) >= dMfiRange[0] && (s.mfi14 ?? 50) <= dMfiRange[1]);
     }
     if (buyingPressureFilter !== "any") {
-      result = result.filter(s => s.buyingPressure === buyingPressureFilter);
+      result = result.filter(s => (s.buyingPressure ?? "neutral") === buyingPressureFilter);
     }
 
     // Sort (copy only when sorting)
@@ -875,7 +875,7 @@ const StockRow = memo(function StockRow({ stock }: { stock: Stock }) {
         <RsiIndicator value={stock.rsi14} />
       </td>
       <td className="text-center py-2.5 px-2">
-        <MfiIndicator mfi={stock.mfi14} change={stock.mfiChange} pressure={stock.buyingPressure} />
+        <MfiIndicator mfi={stock.mfi14 ?? 50} change={stock.mfiChange ?? 0} pressure={stock.buyingPressure ?? "neutral"} />
       </td>
       <td className="text-center py-2.5 px-2">
         <MacdIndicator histogram={stock.macdHistogram} />
@@ -933,7 +933,7 @@ const MobileStockCard = memo(function MobileStockCard({ stock }: { stock: Stock 
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">
             <RsiIndicator value={stock.rsi14} />
-            <MfiIndicator mfi={stock.mfi14} change={stock.mfiChange} pressure={stock.buyingPressure} />
+            <MfiIndicator mfi={stock.mfi14 ?? 50} change={stock.mfiChange ?? 0} pressure={stock.buyingPressure ?? "neutral"} />
             <span className={`text-[10px] font-medium tabular-nums ${stock.change2d >= 0 ? "text-emerald-600 dark:text-emerald-400" : "text-red-500"}`}>
               2D: {stock.change2d >= 0 ? "+" : ""}{stock.change2d.toFixed(1)}%
             </span>

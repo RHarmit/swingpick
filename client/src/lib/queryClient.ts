@@ -1,6 +1,11 @@
 import { QueryClient, QueryFunction } from "@tanstack/react-query";
 
-const API_BASE = "__PORT_5000__".startsWith("__") ? "" : "__PORT_5000__";
+// Use Render backend for production, local proxy for dev
+const RENDER_URL = "https://swingpick.onrender.com";
+const PORT_FWD = "__PORT_5000__";
+const API_BASE = PORT_FWD.startsWith("__") 
+  ? (window.location.hostname === "localhost" ? "" : RENDER_URL)
+  : PORT_FWD;
 
 async function throwIfResNotOk(res: Response) {
   if (!res.ok) {

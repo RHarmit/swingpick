@@ -52,8 +52,8 @@ export default function MomentumPicks() {
   const buyingSurge = useMemo(() => {
     if (!stocks) return [];
     return [...stocks]
-      .filter(s => s.mfiChange > 0)
-      .sort((a, b) => b.mfiChange - a.mfiChange)
+      .filter(s => (s.mfiChange ?? 0) > 0)
+      .sort((a, b) => (b.mfiChange ?? 0) - (a.mfiChange ?? 0))
       .slice(0, 5);
   }, [stocks]);
 
@@ -61,18 +61,18 @@ export default function MomentumPicks() {
   const sellingSurge = useMemo(() => {
     if (!stocks) return [];
     return [...stocks]
-      .filter(s => s.mfiChange < 0)
-      .sort((a, b) => a.mfiChange - b.mfiChange)
+      .filter(s => (s.mfiChange ?? 0) < 0)
+      .sort((a, b) => (a.mfiChange ?? 0) - (b.mfiChange ?? 0))
       .slice(0, 5);
   }, [stocks]);
 
   // Momentum breakdown stats
   const stats = useMemo(() => {
     if (!stocks) return null;
-    const highBuying = stocks.filter(s => s.buyingPressure === "high_buying" || s.buyingPressure === "buying").length;
-    const highSelling = stocks.filter(s => s.buyingPressure === "selling" || s.buyingPressure === "high_selling").length;
-    const avgMfi = stocks.length > 0 ? Math.round(stocks.reduce((a, s) => a + s.mfi14, 0) / stocks.length) : 0;
-    const mfiAbove50 = stocks.filter(s => s.mfi14 > 50).length;
+    const highBuying = stocks.filter(s => (s.buyingPressure ?? "neutral") === "high_buying" || (s.buyingPressure ?? "neutral") === "buying").length;
+    const highSelling = stocks.filter(s => (s.buyingPressure ?? "neutral") === "selling" || (s.buyingPressure ?? "neutral") === "high_selling").length;
+    const avgMfi = stocks.length > 0 ? Math.round(stocks.reduce((a, s) => a + (s.mfi14 ?? 50), 0) / stocks.length) : 0;
+    const mfiAbove50 = stocks.filter(s => (s.mfi14 ?? 50) > 50).length;
     return { highBuying, highSelling, avgMfi, mfiAbove50, total: stocks.length };
   }, [stocks]);
 
@@ -168,10 +168,10 @@ export default function MomentumPicks() {
                   </div>
                   <div className="flex items-center gap-2">
                     <span className="text-[10px] text-muted-foreground tabular-nums">
-                      MFI: {stock.mfi14}
+                      MFI: {stock.mfi14 ?? 50}
                     </span>
                     <span className="text-xs font-bold text-emerald-600 dark:text-emerald-400 tabular-nums">
-                      +{stock.mfiChange.toFixed(1)}
+                      +{(stock.mfiChange ?? 0).toFixed(1)}
                     </span>
                   </div>
                 </div>
@@ -200,10 +200,10 @@ export default function MomentumPicks() {
                   </div>
                   <div className="flex items-center gap-2">
                     <span className="text-[10px] text-muted-foreground tabular-nums">
-                      MFI: {stock.mfi14}
+                      MFI: {stock.mfi14 ?? 50}
                     </span>
                     <span className="text-xs font-bold text-red-500 tabular-nums">
-                      {stock.mfiChange.toFixed(1)}
+                      {(stock.mfiChange ?? 0).toFixed(1)}
                     </span>
                   </div>
                 </div>
@@ -249,7 +249,7 @@ function StockPickCard({ stock, rank, type }: { stock: Stock; rank: number; type
   const isSell = type === "sell";
   const borderColor = isSell ? "border-red-500/20" : "border-emerald-500/20";
   const rankBg = isSell ? "bg-red-500/15 text-red-600 dark:text-red-400" : "bg-emerald-500/15 text-emerald-600 dark:text-emerald-400";
-  const buyingCfg = BUYING_CONFIG[stock.buyingPressure] || BUYING_CONFIG.neutral;
+  const buyingCfg = BUYING_CONFIG[stock.buyingPressure ?? "neutral"] || BUYING_CONFIG.neutral;
 
   return (
     <Link href={`/stock/${stock.symbol}`}>
@@ -300,7 +300,7 @@ function StockPickCard({ stock, rank, type }: { stock: Stock; rank: number; type
           </div>
           <div className="flex justify-between">
             <span className="text-muted-foreground">MFI</span>
-            <span className="font-semibold tabular-nums">{stock.mfi14}</span>
+            <span className="font-semibold tabular-nums">{stock.mfi14 ?? 50}</span>
           </div>
           <div className="flex justify-between">
             <span className="text-muted-foreground">Buying</span>

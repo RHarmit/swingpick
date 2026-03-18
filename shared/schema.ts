@@ -38,9 +38,9 @@ export const stockSchema = z.object({
   stochD: z.number(),
   vwap: z.number(),
   obv: z.number(),
-  mfi14: z.number(), // Money Flow Index (0-100) - buying pressure indicator
-  buyingPressure: z.enum(["high_buying", "buying", "neutral", "selling", "high_selling"]),
-  mfiChange: z.number(), // MFI change vs previous day (positive = increased buying)
+  mfi14: z.number().optional().default(50), // Money Flow Index (0-100) - buying pressure indicator
+  buyingPressure: z.enum(["high_buying", "buying", "neutral", "selling", "high_selling"]).optional().default("neutral"),
+  mfiChange: z.number().optional().default(0), // MFI change vs previous day (positive = increased buying)
   // Swing trading signals (Technical Score)
   swingScore: z.number(), // 0-100 technical composite score
   signal: z.enum(["strong_buy", "buy", "neutral", "sell", "strong_sell"]),

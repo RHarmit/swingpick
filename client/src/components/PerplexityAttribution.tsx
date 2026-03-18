@@ -1,6 +1,6 @@
-export function PerplexityAttribution() {
+export function PerplexityAttribution({ className }: { className?: string }) {
   return (
-    <footer className="w-full py-4 text-center text-xs text-muted-foreground">
+    <footer className={`w-full py-4 text-center text-xs text-muted-foreground ${className || ""}`}>
       <a
         href="https://www.perplexity.ai/computer"
         target="_blank"

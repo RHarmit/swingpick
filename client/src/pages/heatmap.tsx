@@ -174,8 +174,8 @@ export default function Heatmap() {
                           <div>Price: ₹{stock.price.toLocaleString("en-IN", { minimumFractionDigits: 2 })}</div>
                           <div>Today: {stock.changePct >= 0 ? "+" : ""}{stock.changePct.toFixed(2)}%</div>
                           <div>2-Day: {stock.change2d >= 0 ? "+" : ""}{stock.change2d.toFixed(2)}%</div>
-                          <div>Combined: {stock.combinedScore} | MFI: {stock.mfi14}</div>
-                          <div>Buying: {stock.buyingPressure.replace("_", " ")}</div>
+                          <div>Combined: {stock.combinedScore} | MFI: {stock.mfi14 ?? 50}</div>
+                          <div>Buying: {(stock.buyingPressure ?? "neutral").replace("_", " ")}</div>
                         </TooltipContent>
                       </Tooltip>
                     );
