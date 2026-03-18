@@ -484,18 +484,12 @@ async function sleep(ms: number) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-let retryLogCount = 0;
 async function withRetry<T>(fn: () => Promise<T>, retries = 2, delayMs = 1000): Promise<T | null> {
   for (let i = 0; i <= retries; i++) {
     try {
       return await fn();
     } catch (err: any) {
       const msg = err?.message || '';
-      // Log first few errors for debugging
-      if (retryLogCount < 5) {
-        retryLogCount++;
-        console.error(`[Yahoo] withRetry error (attempt ${i+1}/${retries+1}): ${msg.substring(0, 200)}`);
-      }
       // Rate limited or too many requests - wait longer
       if (msg.includes('Too Many Requests') || msg.includes('429') || msg.includes('rate')) {
         const wait = delayMs * Math.pow(2, i); // exponential backoff
@@ -775,14 +769,6 @@ async function fetchAllData(): Promise<CacheEntry> {
             fetchQuote(nse),
             fetchHistorical(nse, 300),
           ]);
-
-          // Log first few failures for debugging
-          if (!quote && failedCount < 3) {
-            console.error(`[Yahoo] ${meta.symbol}: quote returned null`);
-          }
-          if (history.length < 30 && failedCount < 3) {
-            console.error(`[Yahoo] ${meta.symbol}: history only ${history.length} candles (need 30)`);
-          }
 
           // Only fetch sentiment if we have valid data (saves API calls)
           let sentiment = { score: 50, label: "neutral" as Stock["sentimentLabel"], newsCount: 0 };
