@@ -917,7 +917,8 @@ let retryCount = 0;
 let retryTimer: ReturnType<typeof setTimeout> | null = null;
 
 async function getCachedData(): Promise<CacheEntry> {
-  if (dataCache && dataCache.loadedCount > 0 && Date.now() - dataCache.timestamp < CACHE_TTL) {
+  // If we have data from a live fetch (not too old), return it
+  if (dataCache && dataCache.loadedCount > 0 && Date.now() - dataCache.timestamp < CACHE_TTL && !isProgressiveLoading) {
     return dataCache;
   }
 
@@ -1027,5 +1028,51 @@ export async function getLoadingStatus(): Promise<{ loaded: number; total: numbe
   return { loaded: currentProgress.loaded, total: STOCK_LIST.length, loading: !!fetchPromise, retrying: isRetrying, retryCount };
 }
 
-// Pre-warm cache on module load
-getCachedData().catch(err => console.error("[Yahoo] Pre-warm failed:", err));
+// ─── Pre-baked data: Load instantly, refresh in background ───
+
+function loadPrebakedData(): void {
+  try {
+    // Try multiple paths for the pre-baked data
+    const paths = [
+      path.resolve(__dirname, "../prebaked-stocks.json"),
+      path.resolve(process.cwd(), "prebaked-stocks.json"),
+    ];
+    for (const p of paths) {
+      if (fs.existsSync(p)) {
+        const raw = JSON.parse(fs.readFileSync(p, "utf8"));
+        if (raw.stocks && raw.stocks.length > 0) {
+          const stocks = raw.stocks;
+          const historyMap = new Map<string, PricePoint[]>(); // No history in prebaked
+          const sectorPerformance = buildSectorPerformance(stocks);
+
+          dataCache = {
+            stocks,
+            historyMap,
+            sectorPerformance,
+            timestamp: raw.timestamp || Date.now(),
+            loadedCount: stocks.length,
+            totalCount: STOCK_LIST.length,
+          };
+
+          const age = Date.now() - (raw.timestamp || Date.now());
+          const ageMin = Math.round(age / 60000);
+          console.log(`[Yahoo] Loaded ${stocks.length} pre-baked stocks (${ageMin} min old) — INSTANT START`);
+
+          // Refresh from Yahoo in background (non-blocking) after 5 seconds
+          setTimeout(() => {
+            console.log("[Yahoo] Starting background refresh from Yahoo Finance...");
+            getCachedData().catch(err => console.error("[Yahoo] Background refresh failed:", err));
+          }, 5000);
+          return;
+        }
+      }
+    }
+    console.log("[Yahoo] No pre-baked data found, fetching from Yahoo directly...");
+  } catch (e) {
+    console.error("[Yahoo] Failed to load pre-baked data:", e);
+  }
+  // Fallback: fetch from Yahoo
+  getCachedData().catch(err => console.error("[Yahoo] Pre-warm failed:", err));
+}
+
+loadPrebakedData();
