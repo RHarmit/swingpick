@@ -113,58 +113,52 @@ export default function Screener() {
   const wakeAttemptRef = useRef(0);
   const wakeTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
+  // Track backend loading state from /api/status
+  const [serverStillLoading, setServerStillLoading] = useState(false);
+
   const { data: stocks, isLoading, isFetching, refetch: refetchStocks } = useQuery<Stock[]>({
     queryKey: ["/api/stocks"],
-    staleTime: 10 * 60 * 1000,
-    refetchInterval: 10 * 60 * 1000,
+    staleTime: serverStillLoading ? 0 : 10 * 60 * 1000, // No stale time while server is loading
+    refetchInterval: serverStillLoading ? 8_000 : 10 * 60 * 1000, // Refresh every 8s while loading
     retry: 2,
     retryDelay: 5000,
   });
 
-  // Auto-wake logic: when backend returns 0 stocks, call /api/wake and poll until data arrives
+  // Auto-wake + progressive loading: poll status, refetch stocks as they arrive
   useEffect(() => {
-    if (isLoading) return; // Still loading initial data
+    if (isLoading) return;
     const RENDER_URL = "https://swingpick.onrender.com";
     const base = window.location.hostname === "localhost" ? "" : RENDER_URL;
 
     if (stocks && stocks.length === 0 && !backendWaking) {
-      // Backend returned 0 stocks — trigger wake
       setBackendWaking(true);
       wakeAttemptRef.current = 0;
-
-      // Call /api/wake to trigger server-side refresh
       fetch(`${base}/api/wake`).catch(() => {});
 
-      // Poll /api/status every 10 seconds, refetch stocks when data available
       const timer = setInterval(async () => {
         wakeAttemptRef.current++;
         try {
           const res = await fetch(`${base}/api/status`);
           const status = await res.json();
           if (status.loaded > 0) {
-            // Data is available — refetch stocks
             clearInterval(timer);
             wakeTimerRef.current = null;
             setBackendWaking(false);
+            setServerStillLoading(status.loading); // Keep fast-refresh if still loading
             wakeAttemptRef.current = 0;
             refetchStocks();
           } else if (wakeAttemptRef.current % 3 === 0) {
-            // Every 30 seconds, re-trigger wake in case server needs another nudge
             fetch(`${base}/api/wake`).catch(() => {});
           }
-        } catch {
-          // Network error — keep polling
-        }
-        // After 5 minutes (30 attempts), stop and let user know
+        } catch {}
         if (wakeAttemptRef.current > 30) {
           clearInterval(timer);
           wakeTimerRef.current = null;
           setBackendWaking(false);
         }
-      }, 10_000);
+      }, 8_000);
       wakeTimerRef.current = timer;
     } else if (stocks && stocks.length > 0 && backendWaking) {
-      // Data arrived — stop wake polling
       if (wakeTimerRef.current) { clearInterval(wakeTimerRef.current); wakeTimerRef.current = null; }
       setBackendWaking(false);
       wakeAttemptRef.current = 0;
@@ -174,6 +168,27 @@ export default function Screener() {
       if (wakeTimerRef.current) { clearInterval(wakeTimerRef.current); wakeTimerRef.current = null; }
     };
   }, [stocks, isLoading, backendWaking, refetchStocks]);
+
+  // Track server loading state — keep fast refresh until server finishes
+  useEffect(() => {
+    if (!serverStillLoading) return;
+    const RENDER_URL = "https://swingpick.onrender.com";
+    const base = window.location.hostname === "localhost" ? "" : RENDER_URL;
+
+    const timer = setInterval(async () => {
+      try {
+        const res = await fetch(`${base}/api/status`);
+        const status = await res.json();
+        if (!status.loading) {
+          setServerStillLoading(false);
+          clearInterval(timer);
+          refetchStocks(); // Final refetch with all data
+        }
+      } catch {}
+    }, 10_000);
+
+    return () => clearInterval(timer);
+  }, [serverStillLoading, refetchStocks]);
   const { data: sectors } = useQuery<string[]>({
     queryKey: ["/api/sectors"],
     staleTime: 60 * 60 * 1000,
@@ -778,6 +793,14 @@ export default function Screener() {
           </Card>
         ) : (
           <>
+            {/* Progressive loading banner */}
+            {serverStillLoading && (
+              <div className="flex items-center gap-2 mb-2 px-3 py-1.5 rounded-md bg-primary/10 border border-primary/20">
+                <RefreshCw className="w-3 h-3 text-primary animate-spin" />
+                <span className="text-xs text-primary">Loading more stocks... {stocks?.length || 0} loaded so far</span>
+              </div>
+            )}
+
             {/* Pagination Info */}
             <div className="flex items-center justify-between mb-2">
               <span className="text-xs text-muted-foreground">

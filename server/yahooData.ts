@@ -476,23 +476,27 @@ interface CacheEntry {
 }
 
 let dataCache: CacheEntry | null = null;
-const CACHE_TTL = 10 * 60 * 1000; // 10 minutes (longer for 500 stocks)
+const CACHE_TTL = 10 * 60 * 1000; // 10 minutes
 let fetchPromise: Promise<CacheEntry> | null = null;
 let currentProgress = { loaded: 0, total: 0 };
+
+// PROGRESSIVE LOADING: stocks are available as they load, not only when all finish
+let progressiveStocks: Stock[] = [];
+let progressiveHistoryMap = new Map<string, PricePoint[]>();
+let isProgressiveLoading = false;
 
 async function sleep(ms: number) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-async function withRetry<T>(fn: () => Promise<T>, retries = 2, delayMs = 1000): Promise<T | null> {
+async function withRetry<T>(fn: () => Promise<T>, retries = 1, delayMs = 800): Promise<T | null> {
   for (let i = 0; i <= retries; i++) {
     try {
       return await fn();
     } catch (err: any) {
       const msg = err?.message || '';
-      // Rate limited or too many requests - wait longer
       if (msg.includes('Too Many Requests') || msg.includes('429') || msg.includes('rate')) {
-        const wait = delayMs * Math.pow(2, i); // exponential backoff
+        const wait = delayMs * Math.pow(2, i);
         await sleep(wait);
         continue;
       }
@@ -518,7 +522,7 @@ async function fetchHistorical(nseSymbol: string, days: number = 250): Promise<a
     });
     if (!res || !res.quotes || res.quotes.length === 0) return [];
     return res.quotes.filter((q: any) => q.close != null && q.high != null && q.low != null);
-  }, 2, 1500);
+  }, 1, 800);
   return result || [];
 }
 
@@ -526,7 +530,7 @@ async function fetchQuote(nseSymbol: string): Promise<any | null> {
   return withRetry(async () => {
     const yf = getYF();
     return await yf.quote(nseSymbol);
-  }, 2, 1500);
+  }, 1, 800);
 }
 
 function buildStock(symbol: string, sector: string, quote: any, history: any[], sentiment: { score: number; label: Stock["sentimentLabel"]; newsCount: number }): Stock | null {
@@ -747,41 +751,50 @@ function buildSectorPerformance(stocks: Stock[]): SectorPerformance[] {
 
 async function fetchAllData(): Promise<CacheEntry> {
   const total = STOCK_LIST.length;
-  console.log(`[Yahoo] Fetching real-time data for ${total} stocks (with fundamentals & sentiment)...`);
+  console.log(`[Yahoo] Fetching real-time data for ${total} stocks...`);
   const startTime = Date.now();
   currentProgress = { loaded: 0, total };
+
+  // PROGRESSIVE: clear and mark as loading
+  progressiveStocks = [];
+  progressiveHistoryMap = new Map();
+  isProgressiveLoading = true;
 
   const stocks: Stock[] = [];
   const historyMap = new Map<string, PricePoint[]>();
   let failedCount = 0;
+  let consecutiveFailures = 0;
 
-  // Smaller batches (3) with longer delays for cloud environments (Render etc)
-  const BATCH_SIZE = 3;
-  const BATCH_DELAY = 500; // 500ms between batches to avoid Yahoo rate limiting
+  // SPEED FIX: Bigger batches (8), shorter delays (200ms)
+  // Skip sentiment on initial load (adds 3rd API call per stock)
+  const BATCH_SIZE = 8;
+  const BATCH_DELAY = 200;
 
   for (let i = 0; i < STOCK_LIST.length; i += BATCH_SIZE) {
     const batch = STOCK_LIST.slice(i, i + BATCH_SIZE);
 
-    await Promise.allSettled(
+    const results = await Promise.allSettled(
       batch.map(async (meta) => {
         const nse = toNSE(meta.symbol);
         try {
-          // Fetch quote + history sequentially to reduce concurrent connections
-          const quote = await fetchQuote(nse);
-          if (!quote) { failedCount++; return; }
+          // Fetch quote + history in PARALLEL (not sequential) for speed
+          const [quote, history] = await Promise.all([
+            fetchQuote(nse),
+            fetchHistorical(nse, 300),
+          ]);
+          if (!quote) { failedCount++; consecutiveFailures++; return; }
+          if (history.length < 30) { failedCount++; consecutiveFailures++; return; }
 
-          const history = await fetchHistorical(nse, 300);
-          if (history.length < 30) { failedCount++; return; }
+          consecutiveFailures = 0; // Reset on success
 
-          // Only fetch sentiment if we have valid data
-          let sentiment = { score: 50, label: "neutral" as Stock["sentimentLabel"], newsCount: 0 };
-          try {
-            sentiment = await fetchSentiment(nse);
-          } catch (_) {}
+          // SKIP sentiment on initial load for speed — use neutral default
+          const sentiment = { score: 50, label: "neutral" as Stock["sentimentLabel"], newsCount: 0 };
 
           const stock = buildStock(meta.symbol, meta.sector, quote, history, sentiment);
           if (stock) {
             stocks.push(stock);
+            // PROGRESSIVE: make stock immediately available
+            progressiveStocks.push(stock);
           } else {
             failedCount++;
           }
@@ -797,39 +810,56 @@ async function fetchAllData(): Promise<CacheEntry> {
               volume: h.volume || 0,
             }));
             historyMap.set(meta.symbol, pricePoints);
+            progressiveHistoryMap.set(meta.symbol, pricePoints);
           }
         } catch (e) {
           failedCount++;
+          consecutiveFailures++;
         }
       })
     );
 
-    // Track and log progress
-    const loaded = Math.min(i + BATCH_SIZE, total);
+    // Track progress
+    const processed = Math.min(i + BATCH_SIZE, total);
     currentProgress = { loaded: stocks.length, total };
-    if ((i / BATCH_SIZE) % 10 === 9 || loaded >= total) {
-      const pct = Math.round((loaded / total) * 100);
-      console.log(`[Yahoo] Progress: ${loaded}/${total} (${pct}%) - ${stocks.length} successful`);
+    if ((i / BATCH_SIZE) % 5 === 4 || processed >= total) {
+      const pct = Math.round((processed / total) * 100);
+      console.log(`[Yahoo] Progress: ${processed}/${total} (${pct}%) - ${stocks.length} successful`);
     }
 
-    // Early abort detection: if first 30 stocks all fail, Yahoo is likely blocking us
-    if (loaded >= 30 && stocks.length === 0) {
-      console.error(`[Yahoo] First ${loaded} stocks all failed — Yahoo may be blocking this IP. Will retry.`);
+    // Early abort: if first 30 stocks all fail, Yahoo is blocking this IP
+    if (processed >= 30 && stocks.length === 0) {
+      console.error(`[Yahoo] First ${processed} stocks all failed — Yahoo may be blocking. Will retry.`);
       break;
     }
 
-    // Delay between batches
+    // If 20 consecutive failures, slow down
+    if (consecutiveFailures >= 20) {
+      console.warn(`[Yahoo] 20 consecutive failures — slowing down...`);
+      await sleep(3000);
+      consecutiveFailures = 0;
+    }
+
+    // Short delay between batches
     if (i + BATCH_SIZE < STOCK_LIST.length) {
       await sleep(BATCH_DELAY);
     }
   }
 
+  isProgressiveLoading = false;
   const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
   console.log(`[Yahoo] Completed: ${stocks.length}/${total} stocks in ${elapsed}s (${failedCount} failed)`);
 
   // Build sector performance
   const sectorPerformance = buildSectorPerformance(stocks);
   console.log(`[Yahoo] Sector performance calculated for ${sectorPerformance.length} sectors`);
+
+  // After main load completes, fetch sentiment in background (non-blocking)
+  if (stocks.length > 0) {
+    fetchSentimentInBackground(stocks, historyMap).catch(err =>
+      console.error("[Yahoo] Background sentiment fetch failed:", err)
+    );
+  }
 
   return {
     stocks,
@@ -839,6 +869,46 @@ async function fetchAllData(): Promise<CacheEntry> {
     loadedCount: stocks.length,
     totalCount: total,
   };
+}
+
+// Fetch sentiment for all stocks in background AFTER initial load is done
+async function fetchSentimentInBackground(stocks: Stock[], historyMap: Map<string, PricePoint[]>) {
+  console.log(`[Yahoo] Starting background sentiment fetch for ${stocks.length} stocks...`);
+  const SENT_BATCH = 5;
+  let updated = 0;
+
+  for (let i = 0; i < stocks.length; i += SENT_BATCH) {
+    const batch = stocks.slice(i, i + SENT_BATCH);
+    await Promise.allSettled(
+      batch.map(async (stock) => {
+        try {
+          const sentiment = await fetchSentiment(toNSE(stock.symbol));
+          if (sentiment.newsCount > 0) {
+            stock.sentimentScore = sentiment.score;
+            stock.sentimentLabel = sentiment.label;
+            stock.newsCount = sentiment.newsCount;
+            // Recalculate combined score
+            stock.combinedScore = Math.round(
+              stock.swingScore * 0.40 + stock.fundamentalScore * 0.30 + sentiment.score * 0.30
+            );
+            if (stock.combinedScore >= 75) stock.combinedSignal = "strong_buy";
+            else if (stock.combinedScore >= 60) stock.combinedSignal = "buy";
+            else if (stock.combinedScore >= 40) stock.combinedSignal = "neutral";
+            else if (stock.combinedScore >= 25) stock.combinedSignal = "sell";
+            else stock.combinedSignal = "strong_sell";
+            updated++;
+          }
+        } catch (_) {}
+      })
+    );
+    await sleep(100);
+  }
+
+  // Rebuild sector performance with updated sentiment data
+  if (dataCache && updated > 0) {
+    dataCache.sectorPerformance = buildSectorPerformance(stocks);
+    console.log(`[Yahoo] Background sentiment updated ${updated} stocks`);
+  }
 }
 
 const MAX_RETRIES = 3;
@@ -894,6 +964,11 @@ export function forceRefresh(): void {
 // ─── Public API ───
 
 export async function getAllStocks(): Promise<Stock[]> {
+  // PROGRESSIVE: If loading is in progress and we have some stocks already, return them immediately
+  // This way users see stocks appearing as they load instead of waiting for all 747
+  if (isProgressiveLoading && progressiveStocks.length > 0) {
+    return [...progressiveStocks];
+  }
   const data = await getCachedData();
   return data.stocks;
 }
@@ -904,6 +979,11 @@ export async function getStockBySymbol(symbol: string): Promise<Stock | undefine
 }
 
 export async function getHistoricalData(symbol: string, days: number = 90): Promise<PricePoint[]> {
+  // Check progressive data first
+  if (isProgressiveLoading) {
+    const history = progressiveHistoryMap.get(symbol);
+    if (history) return history.slice(-days);
+  }
   const data = await getCachedData();
   const history = data.historyMap.get(symbol);
   if (!history) return [];
@@ -928,8 +1008,19 @@ export async function getTopStocks(limit: number = 10): Promise<Stock[]> {
 
 export async function getLoadingStatus(): Promise<{ loaded: number; total: number; loading: boolean; retrying: boolean; retryCount: number }> {
   const isRetrying = retryTimer !== null;
+
+  // PROGRESSIVE: if loading is in progress, report the progressive count
+  if (isProgressiveLoading) {
+    return {
+      loaded: progressiveStocks.length,
+      total: STOCK_LIST.length,
+      loading: true,
+      retrying: false,
+      retryCount: 0,
+    };
+  }
+
   if (dataCache) {
-    // If cached data has 0 stocks and a retry is scheduled, report as loading
     const effectivelyLoading = dataCache.loadedCount === 0 && (isRetrying || !!fetchPromise);
     return { loaded: dataCache.loadedCount, total: dataCache.totalCount, loading: effectivelyLoading, retrying: isRetrying, retryCount };
   }
