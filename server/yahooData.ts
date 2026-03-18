@@ -1,14 +1,10 @@
 import type { Stock, PricePoint, SectorPerformance } from "@shared/schema";
+import YahooFinance from "yahoo-finance2";
 
 // yahoo-finance2 v3 requires instantiation
-let _yf: any = null;
+const yf = new (YahooFinance as any)({ suppressNotices: ["yahooSurvey"] });
 function getYF(): any {
-  if (!_yf) {
-    const mod = require("yahoo-finance2");
-    const YF = mod.default || mod;
-    _yf = new YF({ suppressNotices: ["yahooSurvey"] });
-  }
-  return _yf;
+  return yf;
 }
 
 interface StockMeta {
@@ -484,32 +480,59 @@ const CACHE_TTL = 10 * 60 * 1000; // 10 minutes (longer for 500 stocks)
 let fetchPromise: Promise<CacheEntry> | null = null;
 let currentProgress = { loaded: 0, total: 0 };
 
+async function sleep(ms: number) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+let retryLogCount = 0;
+async function withRetry<T>(fn: () => Promise<T>, retries = 2, delayMs = 1000): Promise<T | null> {
+  for (let i = 0; i <= retries; i++) {
+    try {
+      return await fn();
+    } catch (err: any) {
+      const msg = err?.message || '';
+      // Log first few errors for debugging
+      if (retryLogCount < 5) {
+        retryLogCount++;
+        console.error(`[Yahoo] withRetry error (attempt ${i+1}/${retries+1}): ${msg.substring(0, 200)}`);
+      }
+      // Rate limited or too many requests - wait longer
+      if (msg.includes('Too Many Requests') || msg.includes('429') || msg.includes('rate')) {
+        const wait = delayMs * Math.pow(2, i); // exponential backoff
+        await sleep(wait);
+        continue;
+      }
+      if (i < retries) {
+        await sleep(delayMs);
+        continue;
+      }
+    }
+  }
+  return null;
+}
+
 async function fetchHistorical(nseSymbol: string, days: number = 250): Promise<any[]> {
-  try {
+  const result = await withRetry(async () => {
     const yf = getYF();
     const endDate = new Date();
     const startDate = new Date();
     startDate.setDate(startDate.getDate() - days);
-    const result = await yf.chart(nseSymbol, {
+    const res = await yf.chart(nseSymbol, {
       period1: startDate,
       period2: endDate,
       interval: "1d",
     });
-    if (!result || !result.quotes || result.quotes.length === 0) return [];
-    return result.quotes.filter((q: any) => q.close != null && q.high != null && q.low != null);
-  } catch (err) {
-    return [];
-  }
+    if (!res || !res.quotes || res.quotes.length === 0) return [];
+    return res.quotes.filter((q: any) => q.close != null && q.high != null && q.low != null);
+  }, 2, 1500);
+  return result || [];
 }
 
 async function fetchQuote(nseSymbol: string): Promise<any | null> {
-  try {
+  return withRetry(async () => {
     const yf = getYF();
-    const result = await yf.quote(nseSymbol);
-    return result;
-  } catch (err) {
-    return null;
-  }
+    return await yf.quote(nseSymbol);
+  }, 2, 1500);
 }
 
 function buildStock(symbol: string, sector: string, quote: any, history: any[], sentiment: { score: number; label: Stock["sentimentLabel"]; newsCount: number }): Stock | null {
@@ -738,8 +761,8 @@ async function fetchAllData(): Promise<CacheEntry> {
   const historyMap = new Map<string, PricePoint[]>();
   let failedCount = 0;
 
-  // Process in batches of 10 (slightly smaller due to sentiment calls)
-  const BATCH_SIZE = 10;
+  // Process in batches of 5 for reliability (3 API calls each = 15 concurrent)
+  const BATCH_SIZE = 5;
   for (let i = 0; i < STOCK_LIST.length; i += BATCH_SIZE) {
     const batch = STOCK_LIST.slice(i, i + BATCH_SIZE);
 
@@ -747,11 +770,25 @@ async function fetchAllData(): Promise<CacheEntry> {
       batch.map(async (meta) => {
         const nse = toNSE(meta.symbol);
         try {
-          const [quote, history, sentiment] = await Promise.all([
+          // Fetch quote + history first, then sentiment separately to reduce parallel load
+          const [quote, history] = await Promise.all([
             fetchQuote(nse),
             fetchHistorical(nse, 300),
-            fetchSentiment(nse),
           ]);
+
+          // Log first few failures for debugging
+          if (!quote && failedCount < 3) {
+            console.error(`[Yahoo] ${meta.symbol}: quote returned null`);
+          }
+          if (history.length < 30 && failedCount < 3) {
+            console.error(`[Yahoo] ${meta.symbol}: history only ${history.length} candles (need 30)`);
+          }
+
+          // Only fetch sentiment if we have valid data (saves API calls)
+          let sentiment = { score: 50, label: "neutral" as Stock["sentimentLabel"], newsCount: 0 };
+          if (quote && history.length >= 30) {
+            sentiment = await fetchSentiment(nse);
+          }
 
           const stock = buildStock(meta.symbol, meta.sector, quote, history, sentiment);
           if (stock) {
@@ -781,14 +818,14 @@ async function fetchAllData(): Promise<CacheEntry> {
     // Track and log progress
     const loaded = Math.min(i + BATCH_SIZE, total);
     currentProgress = { loaded: stocks.length, total };
-    if ((i / BATCH_SIZE) % 5 === 4 || loaded >= total) {
+    if ((i / BATCH_SIZE) % 10 === 9 || loaded >= total) {
       const pct = Math.round((loaded / total) * 100);
       console.log(`[Yahoo] Progress: ${loaded}/${total} (${pct}%) - ${stocks.length} successful`);
     }
 
-    // Small delay between batches to avoid rate limiting
+    // Longer delay between batches to avoid rate limiting with 747 stocks
     if (i + BATCH_SIZE < STOCK_LIST.length) {
-      await new Promise(r => setTimeout(r, 150));
+      await sleep(300);
     }
   }
 
