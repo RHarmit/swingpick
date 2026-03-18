@@ -1,6 +1,6 @@
 import type { Express } from "express";
 import { createServer, type Server } from "http";
-import { getAllStocks, getStockBySymbol, getHistoricalData, getSectors, getLoadingStatus, getSectorPerformance, getTopStocks } from "./yahooData";
+import { getAllStocks, getStockBySymbol, getHistoricalData, getSectors, getLoadingStatus, getSectorPerformance, getTopStocks, forceRefresh } from "./yahooData";
 import type { ScreenerParams } from "@shared/schema";
 
 export async function registerRoutes(
@@ -149,7 +149,26 @@ export async function registerRoutes(
     try {
       res.json(await getLoadingStatus());
     } catch (err) {
-      res.status(500).json({ loaded: 0, total: 0, loading: false });
+      res.status(500).json({ loaded: 0, total: 0, loading: false, retrying: false, retryCount: 0 });
+    }
+  });
+
+  // Wake/refresh endpoint — forces a re-fetch of all stock data
+  // Called when frontend detects 0 stocks, or by keep-alive pings
+  app.get("/api/wake", async (_req, res) => {
+    try {
+      const status = await getLoadingStatus();
+      if (status.loaded === 0 && !status.loading) {
+        console.log("[Yahoo] Wake request received — forcing data refresh");
+        forceRefresh();
+        res.json({ status: "refreshing", message: "Data refresh triggered" });
+      } else if (status.loading) {
+        res.json({ status: "loading", message: `Already loading... ${status.loaded}/${status.total}` });
+      } else {
+        res.json({ status: "ok", message: `${status.loaded} stocks loaded`, loaded: status.loaded });
+      }
+    } catch (err) {
+      res.status(500).json({ status: "error", message: "Failed to trigger wake" });
     }
   });
 

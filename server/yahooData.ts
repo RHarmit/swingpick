@@ -755,8 +755,10 @@ async function fetchAllData(): Promise<CacheEntry> {
   const historyMap = new Map<string, PricePoint[]>();
   let failedCount = 0;
 
-  // Process in batches of 5 for reliability (3 API calls each = 15 concurrent)
-  const BATCH_SIZE = 5;
+  // Smaller batches (3) with longer delays for cloud environments (Render etc)
+  const BATCH_SIZE = 3;
+  const BATCH_DELAY = 500; // 500ms between batches to avoid Yahoo rate limiting
+
   for (let i = 0; i < STOCK_LIST.length; i += BATCH_SIZE) {
     const batch = STOCK_LIST.slice(i, i + BATCH_SIZE);
 
@@ -764,17 +766,18 @@ async function fetchAllData(): Promise<CacheEntry> {
       batch.map(async (meta) => {
         const nse = toNSE(meta.symbol);
         try {
-          // Fetch quote + history first, then sentiment separately to reduce parallel load
-          const [quote, history] = await Promise.all([
-            fetchQuote(nse),
-            fetchHistorical(nse, 300),
-          ]);
+          // Fetch quote + history sequentially to reduce concurrent connections
+          const quote = await fetchQuote(nse);
+          if (!quote) { failedCount++; return; }
 
-          // Only fetch sentiment if we have valid data (saves API calls)
+          const history = await fetchHistorical(nse, 300);
+          if (history.length < 30) { failedCount++; return; }
+
+          // Only fetch sentiment if we have valid data
           let sentiment = { score: 50, label: "neutral" as Stock["sentimentLabel"], newsCount: 0 };
-          if (quote && history.length >= 30) {
+          try {
             sentiment = await fetchSentiment(nse);
-          }
+          } catch (_) {}
 
           const stock = buildStock(meta.symbol, meta.sector, quote, history, sentiment);
           if (stock) {
@@ -809,9 +812,15 @@ async function fetchAllData(): Promise<CacheEntry> {
       console.log(`[Yahoo] Progress: ${loaded}/${total} (${pct}%) - ${stocks.length} successful`);
     }
 
-    // Longer delay between batches to avoid rate limiting with 747 stocks
+    // Early abort detection: if first 30 stocks all fail, Yahoo is likely blocking us
+    if (loaded >= 30 && stocks.length === 0) {
+      console.error(`[Yahoo] First ${loaded} stocks all failed — Yahoo may be blocking this IP. Will retry.`);
+      break;
+    }
+
+    // Delay between batches
     if (i + BATCH_SIZE < STOCK_LIST.length) {
-      await sleep(300);
+      await sleep(BATCH_DELAY);
     }
   }
 
@@ -832,8 +841,13 @@ async function fetchAllData(): Promise<CacheEntry> {
   };
 }
 
+const MAX_RETRIES = 3;
+const RETRY_DELAYS = [30_000, 60_000, 120_000]; // 30s, 60s, 2min between retries
+let retryCount = 0;
+let retryTimer: ReturnType<typeof setTimeout> | null = null;
+
 async function getCachedData(): Promise<CacheEntry> {
-  if (dataCache && Date.now() - dataCache.timestamp < CACHE_TTL) {
+  if (dataCache && dataCache.loadedCount > 0 && Date.now() - dataCache.timestamp < CACHE_TTL) {
     return dataCache;
   }
 
@@ -841,6 +855,23 @@ async function getCachedData(): Promise<CacheEntry> {
     fetchPromise = fetchAllData().then(data => {
       dataCache = data;
       fetchPromise = null;
+
+      // If we got 0 stocks, schedule an automatic retry
+      if (data.loadedCount === 0 && retryCount < MAX_RETRIES) {
+        const delay = RETRY_DELAYS[retryCount] || 120_000;
+        retryCount++;
+        console.log(`[Yahoo] Got 0 stocks. Auto-retry ${retryCount}/${MAX_RETRIES} in ${delay / 1000}s...`);
+        retryTimer = setTimeout(() => {
+          retryTimer = null;
+          // Clear the failed cache so next request triggers a fresh fetch
+          dataCache = null;
+          // Trigger the fetch
+          getCachedData().catch(err => console.error("[Yahoo] Auto-retry failed:", err));
+        }, delay);
+      } else if (data.loadedCount > 0) {
+        retryCount = 0; // Reset on success
+      }
+
       return data;
     }).catch(err => {
       fetchPromise = null;
@@ -849,6 +880,15 @@ async function getCachedData(): Promise<CacheEntry> {
   }
 
   return fetchPromise;
+}
+
+// Force a data re-fetch (called by /api/wake endpoint)
+export function forceRefresh(): void {
+  if (retryTimer) { clearTimeout(retryTimer); retryTimer = null; }
+  retryCount = 0;
+  dataCache = null;
+  fetchPromise = null;
+  getCachedData().catch(err => console.error("[Yahoo] Force refresh failed:", err));
 }
 
 // ─── Public API ───
@@ -886,11 +926,14 @@ export async function getTopStocks(limit: number = 10): Promise<Stock[]> {
     .slice(0, limit);
 }
 
-export async function getLoadingStatus(): Promise<{ loaded: number; total: number; loading: boolean }> {
+export async function getLoadingStatus(): Promise<{ loaded: number; total: number; loading: boolean; retrying: boolean; retryCount: number }> {
+  const isRetrying = retryTimer !== null;
   if (dataCache) {
-    return { loaded: dataCache.loadedCount, total: dataCache.totalCount, loading: false };
+    // If cached data has 0 stocks and a retry is scheduled, report as loading
+    const effectivelyLoading = dataCache.loadedCount === 0 && (isRetrying || !!fetchPromise);
+    return { loaded: dataCache.loadedCount, total: dataCache.totalCount, loading: effectivelyLoading, retrying: isRetrying, retryCount };
   }
-  return { loaded: currentProgress.loaded, total: STOCK_LIST.length, loading: !!fetchPromise };
+  return { loaded: currentProgress.loaded, total: STOCK_LIST.length, loading: !!fetchPromise, retrying: isRetrying, retryCount };
 }
 
 // Pre-warm cache on module load

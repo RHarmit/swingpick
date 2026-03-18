@@ -108,13 +108,72 @@ export default function Screener() {
   const dPriceMin = useDebouncedValue(priceMin, 300);
   const dPriceMax = useDebouncedValue(priceMax, 300);
 
-  const { data: stocks, isLoading, isFetching } = useQuery<Stock[]>({
+  // Track if backend returned empty (0 stocks = backend waking up, not a filter issue)
+  const [backendWaking, setBackendWaking] = useState(false);
+  const wakeAttemptRef = useRef(0);
+  const wakeTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  const { data: stocks, isLoading, isFetching, refetch: refetchStocks } = useQuery<Stock[]>({
     queryKey: ["/api/stocks"],
     staleTime: 10 * 60 * 1000,
     refetchInterval: 10 * 60 * 1000,
     retry: 2,
     retryDelay: 5000,
   });
+
+  // Auto-wake logic: when backend returns 0 stocks, call /api/wake and poll until data arrives
+  useEffect(() => {
+    if (isLoading) return; // Still loading initial data
+    const RENDER_URL = "https://swingpick.onrender.com";
+    const base = window.location.hostname === "localhost" ? "" : RENDER_URL;
+
+    if (stocks && stocks.length === 0 && !backendWaking) {
+      // Backend returned 0 stocks — trigger wake
+      setBackendWaking(true);
+      wakeAttemptRef.current = 0;
+
+      // Call /api/wake to trigger server-side refresh
+      fetch(`${base}/api/wake`).catch(() => {});
+
+      // Poll /api/status every 10 seconds, refetch stocks when data available
+      const timer = setInterval(async () => {
+        wakeAttemptRef.current++;
+        try {
+          const res = await fetch(`${base}/api/status`);
+          const status = await res.json();
+          if (status.loaded > 0) {
+            // Data is available — refetch stocks
+            clearInterval(timer);
+            wakeTimerRef.current = null;
+            setBackendWaking(false);
+            wakeAttemptRef.current = 0;
+            refetchStocks();
+          } else if (wakeAttemptRef.current % 3 === 0) {
+            // Every 30 seconds, re-trigger wake in case server needs another nudge
+            fetch(`${base}/api/wake`).catch(() => {});
+          }
+        } catch {
+          // Network error — keep polling
+        }
+        // After 5 minutes (30 attempts), stop and let user know
+        if (wakeAttemptRef.current > 30) {
+          clearInterval(timer);
+          wakeTimerRef.current = null;
+          setBackendWaking(false);
+        }
+      }, 10_000);
+      wakeTimerRef.current = timer;
+    } else if (stocks && stocks.length > 0 && backendWaking) {
+      // Data arrived — stop wake polling
+      if (wakeTimerRef.current) { clearInterval(wakeTimerRef.current); wakeTimerRef.current = null; }
+      setBackendWaking(false);
+      wakeAttemptRef.current = 0;
+    }
+
+    return () => {
+      if (wakeTimerRef.current) { clearInterval(wakeTimerRef.current); wakeTimerRef.current = null; }
+    };
+  }, [stocks, isLoading, backendWaking, refetchStocks]);
   const { data: sectors } = useQuery<string[]>({
     queryKey: ["/api/sectors"],
     staleTime: 60 * 60 * 1000,
@@ -704,8 +763,15 @@ export default function Screener() {
         </div>
 
         {/* Stock Table */}
-        {isLoading ? (
-          <LoadingProgress />
+        {isLoading || backendWaking ? (
+          <BackendWakeProgress backendWaking={backendWaking} />
+        ) : stocks && stocks.length === 0 ? (
+          <Card className="p-8 text-center border-card-border">
+            <Activity className="w-8 h-8 text-orange-500 mx-auto mb-3" />
+            <h3 className="font-semibold text-sm mb-1">Backend is starting up</h3>
+            <p className="text-muted-foreground text-xs mb-3">The server is waking from sleep. Data will load automatically.</p>
+            <RefreshCw className="w-4 h-4 text-primary mx-auto animate-spin" />
+          </Card>
         ) : filteredStocks.length === 0 ? (
           <Card className="p-8 text-center border-card-border">
             <p className="text-muted-foreground text-sm">No stocks match your criteria. Try adjusting the filters.</p>
@@ -1014,8 +1080,8 @@ function SectorPerformanceBar({ sectors, onSectorClick }: { sectors: SectorPerfo
   );
 }
 
-function LoadingProgress() {
-  const { data: status } = useQuery<{ loaded: number; total: number; loading: boolean }>({
+function BackendWakeProgress({ backendWaking }: { backendWaking: boolean }) {
+  const { data: status } = useQuery<{ loaded: number; total: number; loading: boolean; retrying?: boolean; retryCount?: number }>({
     queryKey: ["/api/status"],
     refetchInterval: 2000,
     staleTime: 0,
@@ -1024,19 +1090,32 @@ function LoadingProgress() {
   const loaded = status?.loaded ?? 0;
   const total = status?.total ?? 500;
   const pct = total > 0 ? Math.round((loaded / total) * 100) : 0;
+  const isRetrying = status?.retrying ?? false;
+  const retryNum = status?.retryCount ?? 0;
+
+  // Determine message based on state
+  let title = "Loading NSE Total Market Universe";
+  let subtitle = `Fetching real-time data, fundamentals, MFI, and news sentiment for ${total} stocks...`;
+  let statusText = loaded > 0 ? `${loaded} / ${total} stocks loaded (${pct}%)` : "Initializing...";
+
+  if (backendWaking || (loaded === 0 && isRetrying)) {
+    title = "Backend waking up — please wait";
+    subtitle = "The server was sleeping to save resources. It's fetching fresh market data now. This usually takes 1-3 minutes.";
+    statusText = isRetrying
+      ? `Retry ${retryNum}/3 in progress... Fetching data from Yahoo Finance`
+      : loaded > 0
+        ? `${loaded} / ${total} stocks loaded (${pct}%)`
+        : "Connecting to Yahoo Finance...";
+  }
 
   return (
     <Card className="p-8 border-card-border">
       <div className="max-w-md mx-auto text-center">
         <Activity className="w-8 h-8 text-primary mx-auto mb-3 animate-pulse" />
-        <h3 className="font-semibold text-sm mb-1">Loading NSE Total Market Universe</h3>
-        <p className="text-xs text-muted-foreground mb-4">
-          Fetching real-time data, fundamentals, MFI, and news sentiment for {total} stocks...
-        </p>
-        <Progress value={pct} className="h-2 mb-2" />
-        <p className="text-xs tabular-nums text-muted-foreground">
-          {loaded > 0 ? `${loaded} / ${total} stocks loaded (${pct}%)` : "Initializing..."}
-        </p>
+        <h3 className="font-semibold text-sm mb-1">{title}</h3>
+        <p className="text-xs text-muted-foreground mb-4">{subtitle}</p>
+        <Progress value={backendWaking && loaded === 0 ? undefined : pct} className="h-2 mb-2" />
+        <p className="text-xs tabular-nums text-muted-foreground">{statusText}</p>
       </div>
     </Card>
   );
