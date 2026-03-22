@@ -15,12 +15,17 @@ interface StockMeta {
 // Full NIFTY 500 universe - loaded from JSON at startup
 import * as fs from "fs";
 import * as path from "path";
+import { fileURLToPath } from "url";
+
+// ESM-compatible __dirname
+const __filename_esm = typeof __filename !== 'undefined' ? __filename : fileURLToPath(import.meta.url);
+const __dirname_esm = typeof __dirname !== 'undefined' ? __dirname : path.dirname(__filename_esm);
 
 let STOCK_LIST: StockMeta[] = [];
 
 // Try loading the NIFTY 500 JSON file
 try {
-  const jsonPath = path.resolve(__dirname, "../nifty500_stocks.json");
+  const jsonPath = path.resolve(__dirname_esm, "../nifty500_stocks.json");
   if (fs.existsSync(jsonPath)) {
     STOCK_LIST = JSON.parse(fs.readFileSync(jsonPath, "utf8"));
   }
@@ -1153,7 +1158,7 @@ function loadPrebakedData(): void {
   try {
     // Try multiple paths for the pre-baked data
     const paths = [
-      path.resolve(__dirname, "../prebaked-stocks.json"),
+      path.resolve(__dirname_esm, "../prebaked-stocks.json"),
       path.resolve(process.cwd(), "prebaked-stocks.json"),
     ];
     for (const p of paths) {

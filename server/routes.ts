@@ -172,5 +172,227 @@ export async function registerRoutes(
     }
   });
 
+  // Hedge fund top 5 picks — stocks under Rs 600 with weighted scoring
+  app.get("/api/hedge-picks", async (req, res) => {
+    try {
+      const allStocks = await getAllStocks();
+      // Filter stocks under Rs 600
+      const affordable = allStocks.filter(s => s.price <= 600 && s.price > 0);
+      // Hedge fund scoring: weight technical 40%, fundamental 30%, sentiment 30%
+      const scored = affordable.map(s => ({
+        ...s,
+        hedgeScore: (s.swingScore * 0.4) + (s.fundamentalScore * 0.3) + (s.sentimentScore * 0.3),
+      }));
+      // Sort by hedge score, take top 5
+      scored.sort((a, b) => b.hedgeScore - a.hedgeScore);
+      res.json(scored.slice(0, 5));
+    } catch (err) {
+      console.error("Error fetching hedge picks:", err);
+      res.status(500).json({ error: "Failed to fetch hedge picks" });
+    }
+  });
+
+  // Overall market sentiment computed from all stocks
+  app.get("/api/market-sentiment", async (req, res) => {
+    try {
+      const allStocks = await getAllStocks();
+      if (allStocks.length === 0) {
+        return res.json({ sentiment: "neutral", score: 50, bullishCount: 0, bearishCount: 0, neutralCount: 0, totalStocks: 0, sectorBreakdown: [], advanceDecline: { advances: 0, declines: 0, unchanged: 0 } });
+      }
+
+      let bullish = 0, bearish = 0, neutral = 0;
+      let totalRsi = 0, totalMfi = 0;
+      let advances = 0, declines = 0, unchanged = 0;
+
+      for (const s of allStocks) {
+        totalRsi += s.rsi14;
+        totalMfi += (s.mfi14 ?? 50);
+
+        if (s.changePct > 0.5) advances++;
+        else if (s.changePct < -0.5) declines++;
+        else unchanged++;
+
+        if (s.signal === "strong_buy" || s.signal === "buy") bullish++;
+        else if (s.signal === "strong_sell" || s.signal === "sell") bearish++;
+        else neutral++;
+      }
+
+      const n = allStocks.length;
+      const avgRsi = totalRsi / n;
+      const avgMfi = totalMfi / n;
+      const bullPct = (bullish / n) * 100;
+      const bearPct = (bearish / n) * 100;
+
+      const adRatio = advances / Math.max(declines, 1);
+      const sentimentScore = Math.round(
+        (avgRsi * 0.25) + (avgMfi * 0.25) + (Math.min(adRatio * 25, 50) * 0.25) + (bullPct * 0.25)
+      );
+
+      const sentiment = sentimentScore >= 60 ? "bullish" : sentimentScore <= 40 ? "bearish" : "neutral";
+
+      const sectorMap = new Map<string, { bullish: number; bearish: number; neutral: number; total: number; avgChange: number }>();
+      for (const s of allStocks) {
+        const entry = sectorMap.get(s.sector) || { bullish: 0, bearish: 0, neutral: 0, total: 0, avgChange: 0 };
+        entry.total++;
+        entry.avgChange += s.changePct;
+        if (s.signal === "strong_buy" || s.signal === "buy") entry.bullish++;
+        else if (s.signal === "strong_sell" || s.signal === "sell") entry.bearish++;
+        else entry.neutral++;
+        sectorMap.set(s.sector, entry);
+      }
+
+      const sectorBreakdown = Array.from(sectorMap.entries()).map(([sector, data]) => ({
+        sector,
+        sentiment: data.bullish > data.bearish ? "bullish" : data.bearish > data.bullish ? "bearish" : "neutral",
+        bullishPct: Math.round((data.bullish / data.total) * 100),
+        bearishPct: Math.round((data.bearish / data.total) * 100),
+        avgChange: Math.round((data.avgChange / data.total) * 100) / 100,
+        stockCount: data.total,
+      })).sort((a, b) => b.avgChange - a.avgChange);
+
+      res.json({
+        sentiment,
+        score: sentimentScore,
+        bullishCount: bullish,
+        bearishCount: bearish,
+        neutralCount: neutral,
+        totalStocks: n,
+        avgRsi: Math.round(avgRsi * 10) / 10,
+        avgMfi: Math.round(avgMfi * 10) / 10,
+        advanceDecline: { advances, declines, unchanged },
+        sectorBreakdown,
+      });
+    } catch (err) {
+      console.error("Error computing market sentiment:", err);
+      res.status(500).json({ error: "Failed to compute market sentiment" });
+    }
+  });
+
+  // Market news/alerts computed from stock data
+  app.get("/api/market-news", async (req, res) => {
+    try {
+      const allStocks = await getAllStocks();
+      if (allStocks.length === 0) return res.json([]);
+
+      const sectorMoves = new Map<string, { totalChange: number; count: number; topMover: string; topChange: number }>();
+      for (const s of allStocks) {
+        const entry = sectorMoves.get(s.sector) || { totalChange: 0, count: 0, topMover: "", topChange: 0 };
+        entry.totalChange += s.changePct;
+        entry.count++;
+        if (Math.abs(s.changePct) > Math.abs(entry.topChange)) {
+          entry.topMover = s.symbol;
+          entry.topChange = s.changePct;
+        }
+        sectorMoves.set(s.sector, entry);
+      }
+
+      const alerts: any[] = [];
+
+      const sectors = Array.from(sectorMoves.entries()).map(([sector, data]) => ({
+        sector,
+        avgChange: data.totalChange / data.count,
+        topMover: data.topMover,
+        topChange: data.topChange,
+        stockCount: data.count,
+      }));
+      sectors.sort((a, b) => b.avgChange - a.avgChange);
+
+      if (sectors.length > 0 && sectors[0].avgChange > 0.5) {
+        alerts.push({
+          type: "sector_bullish",
+          sector: sectors[0].sector,
+          title: `${sectors[0].sector} sector leading gains`,
+          description: `${sectors[0].sector} stocks up ${sectors[0].avgChange.toFixed(2)}% on average. ${sectors[0].topMover} leads with +${sectors[0].topChange.toFixed(2)}%`,
+          impact: "positive",
+          timestamp: new Date().toISOString(),
+        });
+      }
+
+      const lastSector = sectors[sectors.length - 1];
+      if (lastSector && lastSector.avgChange < -0.5) {
+        alerts.push({
+          type: "sector_bearish",
+          sector: lastSector.sector,
+          title: `${lastSector.sector} sector under pressure`,
+          description: `${lastSector.sector} stocks down ${Math.abs(lastSector.avgChange).toFixed(2)}% on average. ${lastSector.topMover} drops ${lastSector.topChange.toFixed(2)}%`,
+          impact: "negative",
+          timestamp: new Date().toISOString(),
+        });
+      }
+
+      const highVolume = allStocks.filter(s => s.volume > s.avgVolume * 3 && s.avgVolume > 0)
+        .sort((a, b) => (b.volume / b.avgVolume) - (a.volume / a.avgVolume))
+        .slice(0, 3);
+      for (const s of highVolume) {
+        const volMultiple = (s.volume / s.avgVolume).toFixed(1);
+        alerts.push({
+          type: "volume_spike",
+          sector: s.sector,
+          title: `${s.symbol}: Volume spike ${volMultiple}x average`,
+          description: `${s.symbol} (${s.sector}) trading at ${volMultiple}x normal volume. Price ${s.changePct >= 0 ? "up" : "down"} ${Math.abs(s.changePct).toFixed(2)}%. Signal: ${s.signal?.replace("_", " ")}`,
+          impact: s.changePct >= 0 ? "positive" : "negative",
+          timestamp: new Date().toISOString(),
+          stock: s.symbol,
+        });
+      }
+
+      const overbought = allStocks.filter(s => s.rsi14 >= 75).sort((a, b) => b.rsi14 - a.rsi14).slice(0, 2);
+      for (const s of overbought) {
+        alerts.push({
+          type: "overbought",
+          sector: s.sector,
+          title: `${s.symbol}: RSI overbought at ${s.rsi14.toFixed(0)}`,
+          description: `${s.symbol} (${s.sector}) RSI at ${s.rsi14.toFixed(1)} — may be overextended. Price: ₹${s.price.toFixed(2)}`,
+          impact: "warning",
+          timestamp: new Date().toISOString(),
+          stock: s.symbol,
+        });
+      }
+
+      const oversold = allStocks.filter(s => s.rsi14 <= 25).sort((a, b) => a.rsi14 - b.rsi14).slice(0, 2);
+      for (const s of oversold) {
+        alerts.push({
+          type: "oversold",
+          sector: s.sector,
+          title: `${s.symbol}: RSI oversold at ${s.rsi14.toFixed(0)}`,
+          description: `${s.symbol} (${s.sector}) RSI at ${s.rsi14.toFixed(1)} — potential bounce candidate. Price: ₹${s.price.toFixed(2)}`,
+          impact: "opportunity",
+          timestamp: new Date().toISOString(),
+          stock: s.symbol,
+        });
+      }
+
+      const sorted = [...allStocks].sort((a, b) => b.changePct - a.changePct);
+      if (sorted[0] && sorted[0].changePct > 3) {
+        alerts.push({
+          type: "top_gainer",
+          sector: sorted[0].sector,
+          title: `${sorted[0].symbol}: Top gainer +${sorted[0].changePct.toFixed(2)}%`,
+          description: `${sorted[0].symbol} (${sorted[0].sector}) surging +${sorted[0].changePct.toFixed(2)}%. Combined score: ${sorted[0].combinedScore.toFixed(0)}`,
+          impact: "positive",
+          timestamp: new Date().toISOString(),
+          stock: sorted[0].symbol,
+        });
+      }
+      const last = sorted[sorted.length - 1];
+      if (last && last.changePct < -3) {
+        alerts.push({
+          type: "top_loser",
+          sector: last.sector,
+          title: `${last.symbol}: Top loser ${last.changePct.toFixed(2)}%`,
+          description: `${last.symbol} (${last.sector}) falling ${last.changePct.toFixed(2)}%. Combined score: ${last.combinedScore.toFixed(0)}`,
+          impact: "negative",
+          timestamp: new Date().toISOString(),
+          stock: last.symbol,
+        });
+      }
+
+      res.json(alerts);
+    } catch (err) {
+      console.error("Error fetching market news:", err);
+      res.status(500).json({ error: "Failed to fetch market news" });
+    }
+  });
+
   return httpServer;
 }

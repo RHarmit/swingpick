@@ -24,6 +24,9 @@ import { queryClient } from "@/lib/queryClient";
 import type { Stock, SectorPerformance } from "@shared/schema";
 import Heatmap from "@/pages/heatmap";
 import MomentumPicks from "@/pages/momentum-picks";
+import HedgePicks from "@/pages/hedge-picks";
+import MarketSentiment from "@/pages/market-sentiment";
+import MarketNews from "@/pages/market-news";
 
 type SortField = "combinedScore" | "swingScore" | "fundamentalScore" | "sentimentScore" | "changePct" | "rsi14" | "volume" | "price" | "marketCap" | "adx14" | "atr14" | "change2d" | "mfi14" | "mfiChange";
 type SortOrder = "asc" | "desc";
@@ -74,7 +77,7 @@ function useDebouncedValue<T>(value: T, delay: number): T {
 }
 
 export default function Screener() {
-  const [activeTab, setActiveTab] = useState<"screener" | "heatmap" | "momentum">("screener");
+  const [activeTab, setActiveTab] = useState<"screener" | "heatmap" | "momentum" | "hedge" | "sentiment" | "news">("screener");
   const [search, setSearch] = useState("");
   const [showFilters, setShowFilters] = useState(false);
   const [sortBy, setSortBy] = useState<SortField>("combinedScore");
@@ -347,6 +350,33 @@ export default function Screener() {
             <Target className="w-3.5 h-3.5" />
             Momentum Picks
           </Button>
+          <Button
+            variant={activeTab === "hedge" ? "secondary" : "ghost"}
+            size="sm"
+            className="gap-1.5 text-xs h-8 shrink-0"
+            onClick={() => setActiveTab("hedge")}
+          >
+            <Crown className="w-3.5 h-3.5" />
+            HF Picks
+          </Button>
+          <Button
+            variant={activeTab === "sentiment" ? "secondary" : "ghost"}
+            size="sm"
+            className="gap-1.5 text-xs h-8 shrink-0"
+            onClick={() => setActiveTab("sentiment")}
+          >
+            <Brain className="w-3.5 h-3.5" />
+            Sentiment
+          </Button>
+          <Button
+            variant={activeTab === "news" ? "secondary" : "ghost"}
+            size="sm"
+            className="gap-1.5 text-xs h-8 shrink-0"
+            onClick={() => setActiveTab("news")}
+          >
+            <Newspaper className="w-3.5 h-3.5" />
+            News
+          </Button>
         </div>
 
         {/* Heatmap Tab */}
@@ -361,6 +391,27 @@ export default function Screener() {
         {activeTab === "momentum" && (
           <>
             <MomentumPicks />
+            <PerplexityAttribution className="mt-6 mb-4" />
+          </>
+        )}
+
+        {activeTab === "hedge" && (
+          <>
+            <HedgePicks />
+            <PerplexityAttribution className="mt-6 mb-4" />
+          </>
+        )}
+
+        {activeTab === "sentiment" && (
+          <>
+            <MarketSentiment />
+            <PerplexityAttribution className="mt-6 mb-4" />
+          </>
+        )}
+
+        {activeTab === "news" && (
+          <>
+            <MarketNews />
             <PerplexityAttribution className="mt-6 mb-4" />
           </>
         )}
