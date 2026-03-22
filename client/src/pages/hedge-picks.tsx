@@ -1,9 +1,10 @@
+import { useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "wouter";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
-import { Crown, TrendingUp, TrendingDown, ArrowUp, ArrowDown, Activity } from "lucide-react";
+import { Crown, TrendingUp, TrendingDown, Activity } from "lucide-react";
 import type { Stock } from "@shared/schema";
 
 type HedgeStock = Stock & { hedgeScore: number };
@@ -39,13 +40,25 @@ function generateReason(stock: any): string {
 }
 
 export default function HedgePicks() {
-  const { data: stocks, isLoading } = useQuery<HedgeStock[]>({
-    queryKey: ["/api/hedge-picks"],
-    staleTime: 5 * 60 * 1000,
-    refetchInterval: 60_000,
+  // Use the EXISTING stocks data — no extra API call needed
+  const { data: allStocks, isLoading } = useQuery<Stock[]>({
+    queryKey: ["/api/stocks"],
+    staleTime: 10 * 60 * 1000,
   });
 
-  if (isLoading || !stocks) {
+  // Compute hedge fund picks client-side
+  const hedgePicks = useMemo<HedgeStock[]>(() => {
+    if (!allStocks || allStocks.length === 0) return [];
+    const affordable = allStocks.filter(s => s.price <= 600 && s.price > 0);
+    const scored = affordable.map(s => ({
+      ...s,
+      hedgeScore: Math.round((s.swingScore * 0.4 + s.fundamentalScore * 0.3 + s.sentimentScore * 0.3) * 10) / 10,
+    }));
+    scored.sort((a, b) => b.hedgeScore - a.hedgeScore);
+    return scored.slice(0, 5);
+  }, [allStocks]);
+
+  if (isLoading || !allStocks) {
     return (
       <Card className="p-8 text-center border-card-border">
         <Crown className="w-8 h-8 mx-auto mb-3 text-amber-500 animate-pulse" />
@@ -54,11 +67,11 @@ export default function HedgePicks() {
     );
   }
 
-  if (stocks.length === 0) {
+  if (hedgePicks.length === 0) {
     return (
       <Card className="p-8 text-center border-card-border">
         <Crown className="w-8 h-8 mx-auto mb-3 text-muted-foreground" />
-        <p className="text-sm text-muted-foreground">No stocks under ₹600 available</p>
+        <p className="text-sm text-muted-foreground">No stocks under ₹600 found yet. Data may still be loading.</p>
       </Card>
     );
   }
@@ -66,153 +79,127 @@ export default function HedgePicks() {
   return (
     <div className="space-y-4">
       {/* Header */}
-      <Card className="p-4 border-card-border border-amber-500/20 bg-amber-500/5">
-        <div className="flex items-center gap-2 mb-1">
-          <Crown className="w-5 h-5 text-amber-500" />
-          <h2 className="font-semibold text-sm">Hedge Fund Top 5 Picks</h2>
-          <Badge variant="outline" className="text-[9px] px-1.5 py-0 border-amber-500/30 text-amber-600 dark:text-amber-400">Under ₹600</Badge>
+      <Card className="p-4 border-card-border bg-gradient-to-r from-amber-500/5 to-transparent">
+        <div className="flex items-center gap-3">
+          <Crown className="w-6 h-6 text-amber-500" />
+          <div>
+            <h2 className="text-lg font-bold flex items-center gap-2">
+              Hedge Fund Top 5 Picks
+              <Badge variant="outline" className="text-amber-600 border-amber-500/30 text-xs">Under ₹600</Badge>
+            </h2>
+            <p className="text-xs text-muted-foreground mt-0.5">
+              Weighted scoring: 40% Technical · 30% Fundamental · 30% Sentiment. Filtered to stocks under ₹600 for accessibility.
+            </p>
+          </div>
         </div>
-        <p className="text-[11px] text-muted-foreground">
-          Weighted scoring: 40% Technical · 30% Fundamental · 30% Sentiment. Filtered to stocks under ₹600 for accessibility.
-        </p>
       </Card>
 
-      {/* Stock Cards */}
-      <div className="grid grid-cols-1 md:grid-cols-1 gap-4">
-        {stocks.map((stock, i) => {
-          const rank = i + 1;
-          const style = RANK_STYLES[rank] || RANK_STYLES[5];
-          const signalCfg = SIGNAL_CONFIG[stock.signal] || SIGNAL_CONFIG.neutral;
-          const reason = generateReason(stock);
-          const volMultiple = stock.avgVolume > 0 ? (stock.volume / stock.avgVolume).toFixed(1) : "N/A";
+      {/* Picks */}
+      {hedgePicks.map((stock, index) => {
+        const rank = index + 1;
+        const style = RANK_STYLES[rank] || RANK_STYLES[4];
+        const signalCfg = SIGNAL_CONFIG[stock.signal] || SIGNAL_CONFIG.neutral;
+        const reason = generateReason(stock);
 
-          return (
-            <Link key={stock.symbol} href={`/stock/${stock.symbol}`}>
-              <Card className={`p-4 border ${style.border} hover:bg-muted/40 transition-colors cursor-pointer`}>
-                <div className="flex flex-col md:flex-row md:items-start gap-4">
-                  {/* Left: Rank + Stock info */}
-                  <div className="flex items-start gap-3 md:w-[220px] shrink-0">
-                    <span className={`text-xs font-bold rounded-full w-7 h-7 flex items-center justify-center shrink-0 ${style.label}`}>
-                      #{rank}
+        return (
+          <Card key={stock.symbol} className={`p-4 md:p-5 border-card-border ${style.border}`}>
+            <div className="flex flex-col md:flex-row md:items-start gap-4">
+              {/* Left: Rank + Stock Info */}
+              <div className="flex items-start gap-3 md:min-w-[200px]">
+                <span className={`w-8 h-8 rounded-full flex items-center justify-center text-sm font-bold shrink-0 ${style.label}`}>
+                  #{rank}
+                </span>
+                <div>
+                  <Link href={`/stock/${stock.symbol}`}>
+                    <span className="font-bold text-base hover:underline cursor-pointer">{stock.symbol}</span>
+                  </Link>
+                  <Badge variant="outline" className="ml-2 text-[10px]">{stock.sector}</Badge>
+                  <p className="text-xs text-muted-foreground mt-0.5">{stock.name}</p>
+                  <div className="flex items-center gap-2 mt-1.5">
+                    <span className="font-semibold">₹{stock.price.toLocaleString("en-IN", { minimumFractionDigits: 2 })}</span>
+                    <span className={`text-xs font-medium flex items-center gap-0.5 ${stock.changePct >= 0 ? "text-emerald-600 dark:text-emerald-400" : "text-red-500"}`}>
+                      {stock.changePct >= 0 ? <TrendingUp className="w-3 h-3" /> : <TrendingDown className="w-3 h-3" />}
+                      {stock.changePct >= 0 ? "+" : ""}{stock.changePct.toFixed(2)}%
                     </span>
-                    <div className="min-w-0">
-                      <div className="flex items-center gap-2">
-                        <span className="font-semibold text-sm">{stock.symbol}</span>
-                        <Badge variant="outline" className="text-[9px] px-1 py-0">{stock.sector}</Badge>
-                      </div>
-                      <div className="text-[10px] text-muted-foreground truncate">{stock.name}</div>
-                      <div className="flex items-center gap-2 mt-1">
-                        <span className="text-sm font-medium tabular-nums">
-                          ₹{stock.price.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                        </span>
-                        <span className={`text-xs font-semibold tabular-nums flex items-center gap-0.5 ${stock.changePct >= 0 ? "text-emerald-600 dark:text-emerald-400" : "text-red-500"}`}>
-                          {stock.changePct >= 0 ? <ArrowUp className="w-3 h-3" /> : <ArrowDown className="w-3 h-3" />}
-                          {Math.abs(stock.changePct).toFixed(2)}%
-                        </span>
-                      </div>
-                      <Badge variant="outline" className={`text-[9px] px-1 py-0 mt-1 ${signalCfg.color}`}>
-                        {signalCfg.label}
-                      </Badge>
-                    </div>
                   </div>
+                  <Badge variant="outline" className={`mt-1.5 text-[10px] ${signalCfg.color}`}>
+                    {signalCfg.label}
+                  </Badge>
+                </div>
+              </div>
 
-                  {/* Middle: Score Breakdown */}
-                  <div className="flex-1 space-y-2">
-                    {/* Hedge Score */}
-                    <div className="flex items-center gap-2 mb-3">
-                      <span className="text-xs text-muted-foreground">Hedge Score</span>
-                      <span className={`text-lg font-bold tabular-nums ${stock.hedgeScore >= 60 ? "text-emerald-600 dark:text-emerald-400" : stock.hedgeScore >= 40 ? "text-yellow-600 dark:text-yellow-400" : "text-red-500"}`}>
-                        {stock.hedgeScore.toFixed(1)}
-                      </span>
-                      <span className="text-[10px] text-muted-foreground">/ 100</span>
-                    </div>
+              {/* Center: Score Breakdown */}
+              <div className="flex-1 space-y-3">
+                <div className="flex items-baseline gap-2">
+                  <span className="text-sm text-muted-foreground">Hedge Score</span>
+                  <span className="text-3xl font-bold text-emerald-600 dark:text-emerald-400">{stock.hedgeScore}</span>
+                  <span className="text-sm text-muted-foreground">/ 100</span>
+                </div>
 
-                    {/* Progress Bars */}
-                    <div className="space-y-1.5">
-                      <div className="flex items-center gap-2">
-                        <span className="text-[10px] text-muted-foreground w-[70px] shrink-0">Technical</span>
-                        <Progress value={stock.swingScore} className="h-2 flex-1 [&>div]:bg-emerald-500" />
-                        <span className="text-[10px] font-semibold tabular-nums w-8 text-right">{stock.swingScore}</span>
-                      </div>
-                      <div className="flex items-center gap-2">
-                        <span className="text-[10px] text-muted-foreground w-[70px] shrink-0">Fundamental</span>
-                        <Progress value={stock.fundamentalScore} className="h-2 flex-1 [&>div]:bg-blue-500" />
-                        <span className="text-[10px] font-semibold tabular-nums w-8 text-right">{stock.fundamentalScore}</span>
-                      </div>
-                      <div className="flex items-center gap-2">
-                        <span className="text-[10px] text-muted-foreground w-[70px] shrink-0">Sentiment</span>
-                        <Progress value={stock.sentimentScore} className="h-2 flex-1 [&>div]:bg-purple-500" />
-                        <span className="text-[10px] font-semibold tabular-nums w-8 text-right">{stock.sentimentScore}</span>
-                      </div>
-                    </div>
+                {/* Progress bars */}
+                <div className="space-y-2">
+                  <div className="flex items-center gap-3">
+                    <span className="text-xs text-muted-foreground w-20">Technical</span>
+                    <Progress value={stock.swingScore} className="flex-1 h-2.5 [&>div]:bg-emerald-500" />
+                    <span className="text-xs font-medium w-8 text-right tabular-nums">{stock.swingScore}</span>
                   </div>
-
-                  {/* Right: Metrics */}
-                  <div className="md:w-[200px] shrink-0">
-                    <div className="grid grid-cols-3 md:grid-cols-2 gap-x-3 gap-y-1.5 text-[10px]">
-                      <div>
-                        <span className="text-muted-foreground">RSI</span>
-                        <div className={`font-semibold tabular-nums ${stock.rsi14 >= 70 ? "text-red-500" : stock.rsi14 <= 30 ? "text-emerald-600 dark:text-emerald-400" : ""}`}>
-                          {stock.rsi14.toFixed(1)}
-                        </div>
-                      </div>
-                      <div>
-                        <span className="text-muted-foreground">MACD</span>
-                        <div className={`font-semibold tabular-nums ${stock.macdHistogram >= 0 ? "text-emerald-600 dark:text-emerald-400" : "text-red-500"}`}>
-                          {stock.macdHistogram.toFixed(2)}
-                        </div>
-                      </div>
-                      <div>
-                        <span className="text-muted-foreground">ADX</span>
-                        <div className={`font-semibold tabular-nums ${stock.adx14 >= 25 ? "text-emerald-600 dark:text-emerald-400" : "text-muted-foreground"}`}>
-                          {stock.adx14.toFixed(1)}
-                        </div>
-                      </div>
-                      <div>
-                        <span className="text-muted-foreground">MFI</span>
-                        <div className="font-semibold tabular-nums">{(stock.mfi14 ?? 50).toFixed(0)}</div>
-                      </div>
-                      <div>
-                        <span className="text-muted-foreground">Vol</span>
-                        <div className="font-semibold tabular-nums">{volMultiple}x</div>
-                      </div>
-                      <div>
-                        <span className="text-muted-foreground">ATR</span>
-                        <div className="font-semibold tabular-nums">{stock.atr14.toFixed(2)}</div>
-                      </div>
-                    </div>
-
-                    {/* Why This Pick */}
-                    <div className="mt-2 pt-2 border-t border-border/50">
-                      <div className="text-[9px] text-muted-foreground uppercase tracking-wider mb-0.5">Why This Pick</div>
-                      <div className="text-[10px] text-foreground/80">{reason}</div>
-                    </div>
+                  <div className="flex items-center gap-3">
+                    <span className="text-xs text-muted-foreground w-20">Fundamental</span>
+                    <Progress value={stock.fundamentalScore} className="flex-1 h-2.5 [&>div]:bg-blue-500" />
+                    <span className="text-xs font-medium w-8 text-right tabular-nums">{stock.fundamentalScore}</span>
+                  </div>
+                  <div className="flex items-center gap-3">
+                    <span className="text-xs text-muted-foreground w-20">Sentiment</span>
+                    <Progress value={stock.sentimentScore} className="flex-1 h-2.5 [&>div]:bg-purple-500" />
+                    <span className="text-xs font-medium w-8 text-right tabular-nums">{stock.sentimentScore}</span>
                   </div>
                 </div>
-              </Card>
-            </Link>
-          );
-        })}
-      </div>
+              </div>
 
-      {/* Methodology */}
-      <Card className="p-4 border-card-border bg-muted/30">
-        <h4 className="text-xs font-semibold mb-2 text-muted-foreground">Methodology</h4>
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-3 text-[11px] text-muted-foreground">
-          <div>
-            <p className="font-medium text-foreground mb-1">Technical (40%)</p>
-            <p>RSI, MACD, ADX, Bollinger Bands, SMA crossovers, volume patterns</p>
-          </div>
-          <div>
-            <p className="font-medium text-foreground mb-1">Fundamental (30%)</p>
-            <p>P/E ratio, EPS, market cap, 52-week position, growth signals</p>
-          </div>
-          <div>
-            <p className="font-medium text-foreground mb-1">Sentiment (30%)</p>
-            <p>News analysis, institutional sentiment, market mood indicators</p>
-          </div>
-        </div>
-      </Card>
+              {/* Right: Key Metrics */}
+              <div className="md:min-w-[180px]">
+                <div className="grid grid-cols-3 md:grid-cols-2 gap-x-4 gap-y-1.5 text-xs">
+                  <div>
+                    <span className="text-muted-foreground">RSI</span>
+                    <div className={`font-semibold tabular-nums ${stock.rsi14 < 30 ? "text-red-500" : stock.rsi14 > 70 ? "text-emerald-600" : ""}`}>
+                      {stock.rsi14.toFixed(1)}
+                    </div>
+                  </div>
+                  <div>
+                    <span className="text-muted-foreground">MACD</span>
+                    <div className={`font-semibold tabular-nums ${stock.macdHistogram >= 0 ? "text-emerald-600" : "text-red-500"}`}>
+                      {stock.macdHistogram.toFixed(2)}
+                    </div>
+                  </div>
+                  <div>
+                    <span className="text-muted-foreground">ADX</span>
+                    <div className={`font-semibold tabular-nums ${stock.adx14 >= 25 ? "text-emerald-600" : ""}`}>
+                      {stock.adx14.toFixed(1)}
+                    </div>
+                  </div>
+                  <div>
+                    <span className="text-muted-foreground">MFI</span>
+                    <div className="font-semibold tabular-nums">{(stock.mfi14 ?? 50).toFixed(0)}</div>
+                  </div>
+                  <div>
+                    <span className="text-muted-foreground">Vol</span>
+                    <div className="font-semibold tabular-nums">{stock.avgVolume > 0 ? (stock.volume / stock.avgVolume).toFixed(1) + "x" : "—"}</div>
+                  </div>
+                  <div>
+                    <span className="text-muted-foreground">ATR</span>
+                    <div className="font-semibold tabular-nums">{stock.atr14.toFixed(2)}</div>
+                  </div>
+                </div>
+
+                <div className="mt-3 pt-2 border-t border-border">
+                  <p className="text-[10px] uppercase tracking-wider text-muted-foreground font-semibold mb-1">Why this pick</p>
+                  <p className="text-xs text-muted-foreground leading-relaxed">{reason}</p>
+                </div>
+              </div>
+            </div>
+          </Card>
+        );
+      })}
     </div>
   );
 }

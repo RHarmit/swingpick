@@ -66,10 +66,23 @@ export default function Heatmap() {
         return b.combinedScore - a.combinedScore;
       });
 
+      // Compute sector-level value for each metric
+      let value: number;
+      if (metric === "avgCombinedScore") {
+        value = sp.avgCombinedScore;
+      } else if (metric === "changePct") {
+        // Compute average today's change from individual stocks
+        value = sectorStocks.length > 0
+          ? sectorStocks.reduce((sum, s) => sum + s.changePct, 0) / sectorStocks.length
+          : 0;
+      } else {
+        value = sp.change2d;
+      }
+
       return {
         ...sp,
         stocks: sortedStocks,
-        value: metric === "avgCombinedScore" ? sp.avgCombinedScore : sp.change2d,
+        value,
       };
     }).sort((a, b) => b.value - a.value);
   }, [sectorPerformance, stocks, metric]);
