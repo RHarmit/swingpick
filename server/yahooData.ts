@@ -485,6 +485,9 @@ let progressiveStocks: Stock[] = [];
 let progressiveHistoryMap = new Map<string, PricePoint[]>();
 let isProgressiveLoading = false;
 
+// Background silent refresh flag — when true, prebaked data stays visible
+let isBackgroundRefreshing = false;
+
 async function sleep(ms: number) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
@@ -957,9 +960,17 @@ async function getCachedData(): Promise<CacheEntry> {
 export function forceRefresh(): void {
   if (retryTimer) { clearTimeout(retryTimer); retryTimer = null; }
   retryCount = 0;
-  dataCache = null;
-  fetchPromise = null;
-  getCachedData().catch(err => console.error("[Yahoo] Force refresh failed:", err));
+  
+  // If we have prebaked/cached data, use silent refresh to keep data visible
+  if (dataCache && dataCache.loadedCount > 0) {
+    console.log("[Yahoo] Force refresh with existing data — using silent background refresh");
+    backgroundRefreshSilent().catch(err => console.error("[Yahoo] Force refresh (silent) failed:", err));
+  } else {
+    // No data at all — use progressive loading
+    dataCache = null;
+    fetchPromise = null;
+    getCachedData().catch(err => console.error("[Yahoo] Force refresh failed:", err));
+  }
 }
 
 // ─── Public API ───
@@ -1030,6 +1041,114 @@ export async function getLoadingStatus(): Promise<{ loaded: number; total: numbe
 
 // ─── Pre-baked data: Load instantly, refresh in background ───
 
+// Silent background refresh: fetches all data WITHOUT touching progressive loading flags.
+// Prebaked data stays visible throughout. Only swaps dataCache atomically when done.
+async function backgroundRefreshSilent(): Promise<void> {
+  if (isBackgroundRefreshing) {
+    console.log("[Yahoo] Background refresh already in progress, skipping");
+    return;
+  }
+  isBackgroundRefreshing = true;
+  const total = STOCK_LIST.length;
+  console.log(`[Yahoo] Silent background refresh: fetching ${total} stocks...`);
+  const startTime = Date.now();
+
+  const stocks: Stock[] = [];
+  const historyMap = new Map<string, PricePoint[]>();
+  let failedCount = 0;
+  let consecutiveFailures = 0;
+  const BATCH_SIZE = 8;
+  const BATCH_DELAY = 200;
+
+  for (let i = 0; i < STOCK_LIST.length; i += BATCH_SIZE) {
+    const batch = STOCK_LIST.slice(i, i + BATCH_SIZE);
+    await Promise.allSettled(
+      batch.map(async (meta) => {
+        const nse = toNSE(meta.symbol);
+        try {
+          const [quote, history] = await Promise.all([
+            fetchQuote(nse),
+            fetchHistorical(nse, 300),
+          ]);
+          if (!quote) { failedCount++; consecutiveFailures++; return; }
+          if (history.length < 30) { failedCount++; consecutiveFailures++; return; }
+          consecutiveFailures = 0;
+          const sentiment = { score: 50, label: "neutral" as Stock["sentimentLabel"], newsCount: 0 };
+          const stock = buildStock(meta.symbol, meta.sector, quote, history, sentiment);
+          if (stock) {
+            stocks.push(stock);
+          } else {
+            failedCount++;
+          }
+          if (history.length > 0) {
+            const pricePoints: PricePoint[] = history.map((h: any) => ({
+              date: new Date(h.date).toISOString().split("T")[0],
+              open: round(h.open),
+              high: round(h.high),
+              low: round(h.low),
+              close: round(h.close),
+              volume: h.volume || 0,
+            }));
+            historyMap.set(meta.symbol, pricePoints);
+          }
+        } catch (e) {
+          failedCount++;
+          consecutiveFailures++;
+        }
+      })
+    );
+
+    // Progress logging every 5 batches
+    const processed = Math.min(i + BATCH_SIZE, total);
+    if ((i / BATCH_SIZE) % 10 === 9 || processed >= total) {
+      const pct = Math.round((processed / total) * 100);
+      console.log(`[Yahoo] BG refresh: ${processed}/${total} (${pct}%) - ${stocks.length} ok`);
+    }
+
+    // Early abort if Yahoo is blocking
+    if (processed >= 30 && stocks.length === 0) {
+      console.error(`[Yahoo] BG refresh: first ${processed} all failed, aborting`);
+      isBackgroundRefreshing = false;
+      return;
+    }
+
+    if (consecutiveFailures >= 20) {
+      await sleep(3000);
+      consecutiveFailures = 0;
+    }
+    if (i + BATCH_SIZE < STOCK_LIST.length) {
+      await sleep(BATCH_DELAY);
+    }
+  }
+
+  const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+  console.log(`[Yahoo] BG refresh done: ${stocks.length}/${total} in ${elapsed}s (${failedCount} failed)`);
+
+  // Only swap cache if we got a meaningful result (at least 50% of prebaked)
+  const prebakedCount = dataCache?.loadedCount || 0;
+  if (stocks.length >= Math.min(prebakedCount * 0.5, 100)) {
+    const sectorPerformance = buildSectorPerformance(stocks);
+    dataCache = {
+      stocks,
+      historyMap,
+      sectorPerformance,
+      timestamp: Date.now(),
+      loadedCount: stocks.length,
+      totalCount: STOCK_LIST.length,
+    };
+    console.log(`[Yahoo] Cache updated with ${stocks.length} fresh stocks`);
+
+    // Fetch sentiment in background after main refresh
+    fetchSentimentInBackground(stocks, historyMap).catch(err =>
+      console.error("[Yahoo] Background sentiment failed:", err)
+    );
+  } else {
+    console.warn(`[Yahoo] BG refresh got only ${stocks.length} stocks (prebaked had ${prebakedCount}), keeping prebaked data`);
+  }
+
+  isBackgroundRefreshing = false;
+}
+
 function loadPrebakedData(): void {
   try {
     // Try multiple paths for the pre-baked data
@@ -1045,11 +1164,13 @@ function loadPrebakedData(): void {
           const historyMap = new Map<string, PricePoint[]>(); // No history in prebaked
           const sectorPerformance = buildSectorPerformance(stocks);
 
+          // Use Date.now() as timestamp so cache TTL check passes
+          // Prebaked data should always be considered "fresh" until background refresh completes
           dataCache = {
             stocks,
             historyMap,
             sectorPerformance,
-            timestamp: raw.timestamp || Date.now(),
+            timestamp: Date.now(),
             loadedCount: stocks.length,
             totalCount: STOCK_LIST.length,
           };
@@ -1058,10 +1179,11 @@ function loadPrebakedData(): void {
           const ageMin = Math.round(age / 60000);
           console.log(`[Yahoo] Loaded ${stocks.length} pre-baked stocks (${ageMin} min old) — INSTANT START`);
 
-          // Refresh from Yahoo in background (non-blocking) after 5 seconds
+          // Silent background refresh after 5 seconds — does NOT touch progressive loading
+          // Prebaked data stays visible the entire time
           setTimeout(() => {
-            console.log("[Yahoo] Starting background refresh from Yahoo Finance...");
-            getCachedData().catch(err => console.error("[Yahoo] Background refresh failed:", err));
+            console.log("[Yahoo] Starting silent background refresh from Yahoo Finance...");
+            backgroundRefreshSilent().catch(err => console.error("[Yahoo] Background refresh failed:", err));
           }, 5000);
           return;
         }
@@ -1071,7 +1193,7 @@ function loadPrebakedData(): void {
   } catch (e) {
     console.error("[Yahoo] Failed to load pre-baked data:", e);
   }
-  // Fallback: fetch from Yahoo
+  // Fallback: fetch from Yahoo (uses progressive loading)
   getCachedData().catch(err => console.error("[Yahoo] Pre-warm failed:", err));
 }
 
