@@ -27,6 +27,7 @@ import MomentumPicks from "@/pages/momentum-picks";
 import HedgePicks from "@/pages/hedge-picks";
 import MarketSentiment from "@/pages/market-sentiment";
 import MarketNews from "@/pages/market-news";
+import ExplosivePicks from "@/pages/explosive-picks";
 
 type SortField = "combinedScore" | "swingScore" | "fundamentalScore" | "sentimentScore" | "changePct" | "rsi14" | "volume" | "price" | "marketCap" | "adx14" | "atr14" | "change2d" | "mfi14" | "mfiChange";
 type SortOrder = "asc" | "desc";
@@ -76,8 +77,53 @@ function useDebouncedValue<T>(value: T, delay: number): T {
   return debounced;
 }
 
+// Hedge fund entry/exit computation using technicals
+function computeEntryExit(stock: Stock): { entry: number; target: number; stopLoss: number } {
+  const price = stock.price;
+  const atr = stock.atr14 || 0;
+
+  // ENTRY: Best support level
+  // Priority: Bollinger Lower > SMA support > VWAP > current price - 1 ATR
+  let entry = price;
+  const supports = [
+    stock.bollingerLower,
+    stock.sma20 < price ? stock.sma20 : 0,
+    stock.sma50 < price ? stock.sma50 : 0,
+    stock.vwap < price ? stock.vwap : 0,
+  ].filter(v => v > 0 && v < price);
+
+  if (supports.length > 0) {
+    // Nearest support below current price
+    entry = Math.max(...supports);
+  } else {
+    // No support below — use price minus 1 ATR
+    entry = Math.max(price - atr, price * 0.97);
+  }
+
+  // TARGET: Best resistance level
+  // Bollinger Upper or 2x ATR above current price
+  let target = stock.bollingerUpper || price + 2 * atr;
+  if (target <= price) target = price + 2 * atr;
+  // Also consider 52-week high as ceiling
+  if (stock.high52w > 0 && stock.high52w < target) {
+    target = Math.min(target, stock.high52w);
+  }
+  // Minimum 3% target
+  if (target < price * 1.03) target = price * 1.03;
+
+  // STOP LOSS: 1.5x ATR below entry
+  let stopLoss = entry - 1.5 * atr;
+  if (stopLoss <= 0 || stopLoss >= entry) stopLoss = entry * 0.95; // fallback 5% below
+
+  return {
+    entry: Math.round(entry * 100) / 100,
+    target: Math.round(target * 100) / 100,
+    stopLoss: Math.round(stopLoss * 100) / 100,
+  };
+}
+
 export default function Screener() {
-  const [activeTab, setActiveTab] = useState<"screener" | "heatmap" | "momentum" | "hedge" | "sentiment" | "news">("screener");
+  const [activeTab, setActiveTab] = useState<"screener" | "heatmap" | "momentum" | "hedge" | "sentiment" | "news" | "explosive">("screener");
   const [search, setSearch] = useState("");
   const [showFilters, setShowFilters] = useState(false);
   const [sortBy, setSortBy] = useState<SortField>("combinedScore");
@@ -377,6 +423,15 @@ export default function Screener() {
             <Newspaper className="w-3.5 h-3.5" />
             News
           </Button>
+          <Button
+            variant={activeTab === "explosive" ? "secondary" : "ghost"}
+            size="sm"
+            className="gap-1.5 text-xs h-8 shrink-0"
+            onClick={() => setActiveTab("explosive")}
+          >
+            <Zap className="w-3.5 h-3.5" />
+            Explosive
+          </Button>
         </div>
 
         {/* Heatmap Tab */}
@@ -412,6 +467,13 @@ export default function Screener() {
         {activeTab === "news" && (
           <>
             <MarketNews />
+            <PerplexityAttribution className="mt-6 mb-4" />
+          </>
+        )}
+
+        {activeTab === "explosive" && (
+          <>
+            <ExplosivePicks />
             <PerplexityAttribution className="mt-6 mb-4" />
           </>
         )}
@@ -869,6 +931,18 @@ export default function Screener() {
                   <tr className="border-b border-border text-xs text-muted-foreground">
                     <th className="text-left py-2 px-3 font-medium">Stock</th>
                     <th className="text-right py-2 px-2 font-medium">Price</th>
+                    <th className="text-right py-2 px-2 font-medium">
+                      <Tooltip><TooltipTrigger className="cursor-help text-emerald-600">Entry</TooltipTrigger>
+                        <TooltipContent className="text-xs max-w-[200px]">Best entry price from support levels (Bollinger Lower, SMA, VWAP)</TooltipContent></Tooltip>
+                    </th>
+                    <th className="text-right py-2 px-2 font-medium">
+                      <Tooltip><TooltipTrigger className="cursor-help text-blue-600">Target</TooltipTrigger>
+                        <TooltipContent className="text-xs max-w-[200px]">Price target from Bollinger Upper / 2x ATR resistance</TooltipContent></Tooltip>
+                    </th>
+                    <th className="text-right py-2 px-2 font-medium">
+                      <Tooltip><TooltipTrigger className="cursor-help text-red-500">SL</TooltipTrigger>
+                        <TooltipContent className="text-xs max-w-[200px]">Stop Loss: 1.5x ATR below entry for risk management</TooltipContent></Tooltip>
+                    </th>
                     <th className="text-right py-2 px-2 font-medium">Change</th>
                     <th className="text-center py-2 px-2 font-medium">
                       <Tooltip><TooltipTrigger className="cursor-help">Combined</TooltipTrigger>
@@ -979,6 +1053,7 @@ const PaginationControls = memo(function PaginationControls({ page, totalPages, 
 // ─── Memoized Stock Row (Desktop) ───
 
 const StockRow = memo(function StockRow({ stock }: { stock: Stock }) {
+  const { entry, target, stopLoss } = computeEntryExit(stock);
   return (
     <tr
       className="border-b border-border/50 hover:bg-muted/40 transition-colors cursor-pointer"
@@ -993,6 +1068,15 @@ const StockRow = memo(function StockRow({ stock }: { stock: Stock }) {
         </Link>
       </td>
       <td className="text-right py-2.5 px-2 tabular-nums font-medium">{formatPrice(stock.price)}</td>
+      <td className="text-right py-2.5 px-2 tabular-nums text-xs">
+        <span className="text-emerald-600 dark:text-emerald-400 font-medium">₹{entry.toFixed(0)}</span>
+      </td>
+      <td className="text-right py-2.5 px-2 tabular-nums text-xs">
+        <span className="text-blue-600 dark:text-blue-400 font-medium">₹{target.toFixed(0)}</span>
+      </td>
+      <td className="text-right py-2.5 px-2 tabular-nums text-xs">
+        <span className="text-red-500 font-medium">₹{stopLoss.toFixed(0)}</span>
+      </td>
       <td className={`text-right py-2.5 px-2 tabular-nums font-medium ${stock.changePct >= 0 ? "text-emerald-600 dark:text-emerald-400" : "text-red-500"}`}>
         <div className="flex items-center justify-end gap-0.5">
           {stock.changePct >= 0 ? <ArrowUp className="w-3 h-3" /> : <ArrowDown className="w-3 h-3" />}
@@ -1045,6 +1129,7 @@ const StockRow = memo(function StockRow({ stock }: { stock: Stock }) {
 // ─── Memoized Mobile Stock Card ───
 
 const MobileStockCard = memo(function MobileStockCard({ stock }: { stock: Stock }) {
+  const { entry, target, stopLoss } = computeEntryExit(stock);
   return (
     <Link href={`/stock/${stock.symbol}`}>
       <Card className="p-3 border-card-border hover:bg-muted/40 transition-colors cursor-pointer" data-testid={`card-stock-${stock.symbol}`}>
@@ -1059,6 +1144,12 @@ const MobileStockCard = memo(function MobileStockCard({ stock }: { stock: Stock 
               {stock.changePct >= 0 ? "+" : ""}{stock.changePct.toFixed(2)}%
             </div>
           </div>
+        </div>
+        {/* Entry/Exit/SL */}
+        <div className="flex items-center gap-3 mb-2 text-[10px]">
+          <span className="text-muted-foreground">Entry: <span className="text-emerald-600 dark:text-emerald-400 font-semibold">₹{entry.toFixed(0)}</span></span>
+          <span className="text-muted-foreground">Target: <span className="text-blue-600 dark:text-blue-400 font-semibold">₹{target.toFixed(0)}</span></span>
+          <span className="text-muted-foreground">SL: <span className="text-red-500 font-semibold">₹{stopLoss.toFixed(0)}</span></span>
         </div>
         {/* Score Row */}
         <div className="flex items-center gap-1.5 mb-2">
