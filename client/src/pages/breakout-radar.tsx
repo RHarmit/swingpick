@@ -339,9 +339,11 @@ function BreakoutCard({ stock, rank }: { stock: BreakoutStock; rank: number }) {
 
 
 export default function BreakoutRadar() {
-  const { data: radarStocks, isLoading } = useQuery<BreakoutStock[]>({
+  const { data: radarStocks, isLoading, isError, error } = useQuery<BreakoutStock[]>({
     queryKey: ["/api/breakout-radar"],
     staleTime: 10 * 60 * 1000,
+    retry: 3,
+    retryDelay: 5000,
   });
 
   const [showCount, setShowCount] = useState(5);
@@ -357,6 +359,17 @@ export default function BreakoutRadar() {
   const avgScore = radarStocks && radarStocks.length > 0
     ? Math.round(radarStocks.reduce((a, s) => a + s.breakoutScore, 0) / radarStocks.length)
     : 0;
+
+  if (isError) {
+    return (
+      <Card className="p-8 text-center border-card-border">
+        <Crosshair className="w-8 h-8 mx-auto mb-3 text-amber-500" />
+        <h3 className="font-semibold text-sm mb-1">Backend is updating</h3>
+        <p className="text-xs text-muted-foreground mb-3">The Breakout Radar endpoint is being deployed. This usually takes 2-3 minutes.</p>
+        <p className="text-[10px] text-muted-foreground/60">The page will automatically retry. If the issue persists, refresh the page.</p>
+      </Card>
+    );
+  }
 
   if (isLoading || !radarStocks) {
     return (

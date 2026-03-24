@@ -39,6 +39,11 @@ export const getQueryFn: <T>(options: {
     }
 
     await throwIfResNotOk(res);
+    // Guard against HTML fallback from server (unmatched routes return index.html)
+    const contentType = res.headers.get("content-type") || "";
+    if (!contentType.includes("application/json")) {
+      throw new Error(`Expected JSON but got ${contentType}`);
+    }
     return await res.json();
   };
 
