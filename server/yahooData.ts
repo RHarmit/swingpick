@@ -1205,3 +1205,34 @@ function loadPrebakedData(): void {
 }
 
 loadPrebakedData();
+
+// ─── Auto-refresh: keep data fresh during market hours ───
+// IST = UTC+5:30. Market: 9:15 AM - 3:30 PM IST
+function scheduleAutoRefresh() {
+  const REFRESH_INTERVAL = 30 * 60 * 1000; // 30 minutes
+  
+  setInterval(() => {
+    const now = new Date();
+    // Convert to IST
+    const istOffset = 5.5 * 60 * 60 * 1000;
+    const istTime = new Date(now.getTime() + istOffset + now.getTimezoneOffset() * 60 * 1000);
+    const hours = istTime.getHours();
+    const mins = istTime.getMinutes();
+    const totalMins = hours * 60 + mins;
+    
+    // Refresh during market hours (9:00 - 16:00 IST) and shortly after close
+    const isMarketTime = totalMins >= 540 && totalMins <= 960; // 9:00 AM to 4:00 PM IST
+    
+    if (isMarketTime && dataCache && dataCache.loadedCount > 0) {
+      const cacheAge = Date.now() - dataCache.timestamp;
+      if (cacheAge > REFRESH_INTERVAL) {
+        console.log(`[Yahoo] Auto-refresh: data is ${Math.round(cacheAge/60000)}min old, refreshing...`);
+        backgroundRefreshSilent().catch(err => console.error("[Yahoo] Auto-refresh failed:", err));
+      }
+    }
+  }, 5 * 60 * 1000); // Check every 5 minutes
+  
+  console.log("[Yahoo] Auto-refresh scheduler started (30min during market hours)");
+}
+
+scheduleAutoRefresh();

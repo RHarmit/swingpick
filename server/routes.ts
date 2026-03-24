@@ -172,6 +172,17 @@ export async function registerRoutes(
     }
   });
 
+  // Force a full data refresh (regardless of current state)
+  app.get("/api/force-refresh", async (_req, res) => {
+    try {
+      console.log("[Yahoo] Force refresh requested — fetching latest data from Yahoo Finance");
+      forceRefresh();
+      res.json({ status: "refreshing", message: "Full data refresh triggered. New data will be available in 2-5 minutes." });
+    } catch (err) {
+      res.status(500).json({ status: "error", message: "Failed to trigger refresh" });
+    }
+  });
+
   // Hedge fund top 5 picks — stocks under Rs 600 with weighted scoring
   app.get("/api/hedge-picks", async (req, res) => {
     try {
