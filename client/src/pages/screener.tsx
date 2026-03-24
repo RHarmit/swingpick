@@ -123,7 +123,18 @@ function computeEntryExit(stock: Stock): { entry: number; target: number; stopLo
   };
 }
 
+// Check if Indian market is currently open (9:15 AM - 3:30 PM IST, weekdays)
+function isIndianMarketOpen(): boolean {
+  const now = new Date();
+  const istDate = new Date(now.toLocaleString("en-US", { timeZone: "Asia/Kolkata" }));
+  const day = istDate.getDay();
+  if (day === 0 || day === 6) return false; // weekend
+  const totalMins = istDate.getHours() * 60 + istDate.getMinutes();
+  return totalMins >= 555 && totalMins <= 930; // 9:15 AM to 3:30 PM
+}
+
 export default function Screener() {
+  const marketOpen = isIndianMarketOpen();
   const [activeTab, setActiveTab] = useState<"screener" | "heatmap" | "momentum" | "hedge" | "sentiment" | "news" | "explosive" | "breakout">("screener");
   const [search, setSearch] = useState("");
   const [showFilters, setShowFilters] = useState(false);
@@ -168,8 +179,8 @@ export default function Screener() {
 
   const { data: stocks, isLoading, isFetching, refetch: refetchStocks } = useQuery<Stock[]>({
     queryKey: ["/api/stocks"],
-    staleTime: serverStillLoading ? 0 : 10 * 60 * 1000, // No stale time while server is loading
-    refetchInterval: serverStillLoading ? 8_000 : 10 * 60 * 1000, // Refresh every 8s while loading
+    staleTime: serverStillLoading ? 0 : marketOpen ? 2 * 60 * 1000 : 10 * 60 * 1000,
+    refetchInterval: serverStillLoading ? 8_000 : marketOpen ? 3 * 60 * 1000 : 10 * 60 * 1000,
     retry: 2,
     retryDelay: 5000,
   });
@@ -587,8 +598,15 @@ export default function Screener() {
         </div>
 
         {/* Data status bar */}
-        <div className="flex items-center gap-2 mb-3 text-xs text-muted-foreground">
-          <span>Real-time data from NSE via Yahoo Finance</span>
+        <div className="flex items-center gap-2 mb-3 text-xs text-muted-foreground flex-wrap">
+          <span className="flex items-center gap-1">
+            <span className="inline-block w-1.5 h-1.5 rounded-full bg-green-500" />
+            Live data from NSE via Yahoo Finance
+          </span>
+          <span className="text-[10px] tabular-nums">·</span>
+          <span className="text-[10px] tabular-nums">
+            {new Date().toLocaleString("en-IN", { timeZone: "Asia/Kolkata", day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit", hour12: true })} IST
+          </span>
           <Button
             variant="ghost"
             size="sm"

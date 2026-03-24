@@ -338,10 +338,22 @@ function BreakoutCard({ stock, rank }: { stock: BreakoutStock; rank: number }) {
 }
 
 
+// Check if Indian market is open
+function isMarketOpen(): boolean {
+  const now = new Date();
+  const ist = new Date(now.toLocaleString("en-US", { timeZone: "Asia/Kolkata" }));
+  const day = ist.getDay();
+  if (day === 0 || day === 6) return false;
+  const totalMins = ist.getHours() * 60 + ist.getMinutes();
+  return totalMins >= 555 && totalMins <= 930;
+}
+
 export default function BreakoutRadar() {
+  const marketOpen = isMarketOpen();
   const { data: radarStocks, isLoading, isError, error } = useQuery<BreakoutStock[]>({
     queryKey: ["/api/breakout-radar"],
-    staleTime: 10 * 60 * 1000,
+    staleTime: marketOpen ? 3 * 60 * 1000 : 10 * 60 * 1000,
+    refetchInterval: marketOpen ? 3 * 60 * 1000 : undefined,
     retry: 3,
     retryDelay: 5000,
   });

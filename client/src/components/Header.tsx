@@ -1,32 +1,60 @@
 import { useState, useEffect } from "react";
 import { Link } from "wouter";
-import { Sun, Moon, TrendingUp, Activity } from "lucide-react";
+import { Sun, Moon, TrendingUp, Activity, Clock, RefreshCw } from "lucide-react";
 import { useTheme } from "@/components/ThemeProvider";
 import { Button } from "@/components/ui/button";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { useQuery } from "@tanstack/react-query";
+import { queryClient } from "@/lib/queryClient";
 
 export default function Header() {
   const { theme, toggleTheme } = useTheme();
-  const [time, setTime] = useState(new Date());
+  const [istNow, setIstNow] = useState(() => getIST());
 
   useEffect(() => {
-    const timer = setInterval(() => setTime(new Date()), 60000);
+    const timer = setInterval(() => setIstNow(getIST()), 10000); // update every 10s
     return () => clearInterval(timer);
   }, []);
 
   // Get status for loaded stock count
   const { data: status } = useQuery<{ loaded: number; total: number; loading: boolean }>({
     queryKey: ["/api/status"],
-    staleTime: 60 * 1000,
+    staleTime: 30 * 1000,
+    refetchInterval: 30 * 1000,
   });
 
-  // IST time for Indian market hours
-  const istTime = new Date(time.toLocaleString("en-US", { timeZone: "Asia/Kolkata" }));
-  const hours = istTime.getHours();
-  const mins = istTime.getMinutes();
-  const isMarketHours = hours >= 9 && (hours < 15 || (hours === 15 && mins <= 30));
-  const isPreMarket = hours >= 9 && hours < 9 || (hours === 9 && mins < 15);
-  const marketLabel = isMarketHours ? "Market Open" : "Market Closed";
+  const isWeekend = istNow.day === 0 || istNow.day === 6;
+  const totalMins = istNow.hours * 60 + istNow.mins;
+  const marketOpen = 9 * 60 + 15;  // 9:15 AM
+  const marketClose = 15 * 60 + 30; // 3:30 PM
+
+  let marketStatus: "open" | "pre" | "closed";
+  if (isWeekend) {
+    marketStatus = "closed";
+  } else if (totalMins >= marketOpen && totalMins <= marketClose) {
+    marketStatus = "open";
+  } else if (totalMins >= marketOpen - 15 && totalMins < marketOpen) {
+    marketStatus = "pre";
+  } else {
+    marketStatus = "closed";
+  }
+
+  const marketLabel = marketStatus === "open" ? "Market Open" : marketStatus === "pre" ? "Pre-Market" : "Market Closed";
+  const marketDotColor = marketStatus === "open" ? "bg-green-500 animate-pulse" : marketStatus === "pre" ? "bg-amber-500 animate-pulse" : "bg-red-500/50";
+
+  // Time until close (if open)
+  const minsToClose = marketStatus === "open" ? marketClose - totalMins : 0;
+  const hoursToClose = Math.floor(minsToClose / 60);
+  const minsRemaining = minsToClose % 60;
+
+  const handleRefresh = () => {
+    // Invalidate all queries to force a refetch
+    queryClient.invalidateQueries({ queryKey: ["/api/stocks"] });
+    queryClient.invalidateQueries({ queryKey: ["/api/breakout-radar"] });
+    queryClient.invalidateQueries({ queryKey: ["/api/top-stocks"] });
+    queryClient.invalidateQueries({ queryKey: ["/api/sector-performance"] });
+    queryClient.invalidateQueries({ queryKey: ["/api/status"] });
+  };
 
   return (
     <>
@@ -47,7 +75,29 @@ export default function Header() {
             </div>
           </Link>
 
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-2 md:gap-3">
+            {/* IST Clock + Date */}
+            <Tooltip>
+              <TooltipTrigger>
+                <div className="hidden sm:flex items-center gap-1.5 text-[10px] text-muted-foreground px-2 py-1 rounded-md bg-muted/50">
+                  <Clock className="w-3 h-3 shrink-0" />
+                  <div className="flex flex-col leading-tight items-end">
+                    <span className="tabular-nums font-medium text-foreground/80">
+                      {istNow.timeStr}
+                    </span>
+                    <span className="text-[9px]">{istNow.dateStr} IST</span>
+                  </div>
+                </div>
+              </TooltipTrigger>
+              <TooltipContent className="text-xs">
+                <div>India Standard Time (UTC+5:30)</div>
+                <div className="text-muted-foreground">{istNow.fullDateStr}</div>
+                {marketStatus === "open" && (
+                  <div className="text-emerald-500 mt-1">Market closes in {hoursToClose}h {minsRemaining}m</div>
+                )}
+              </TooltipContent>
+            </Tooltip>
+
             {/* Stock count */}
             {status && status.loaded > 0 && (
               <div className="hidden md:flex items-center gap-1.5 text-[10px] text-muted-foreground px-2 py-1 rounded-md bg-muted/50">
@@ -58,12 +108,43 @@ export default function Header() {
             )}
 
             {/* Market status */}
-            <div className="hidden sm:flex items-center gap-1.5 text-xs text-muted-foreground">
-              <span className={`inline-block w-2 h-2 rounded-full ${
-                isMarketHours ? "bg-green-500 animate-pulse" : "bg-amber-500/60"
-              }`} />
-              <span>{marketLabel}</span>
-            </div>
+            <Tooltip>
+              <TooltipTrigger>
+                <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                  <span className={`inline-block w-2 h-2 rounded-full ${marketDotColor}`} />
+                  <span className="hidden sm:inline">{marketLabel}</span>
+                </div>
+              </TooltipTrigger>
+              <TooltipContent className="text-xs">
+                <div>{marketLabel}</div>
+                <div className="text-muted-foreground">NSE: 9:15 AM - 3:30 PM IST</div>
+                {marketStatus === "open" && (
+                  <div className="text-emerald-500">Closes in {hoursToClose}h {minsRemaining}m</div>
+                )}
+                {marketStatus === "closed" && !isWeekend && (
+                  <div className="text-muted-foreground">Prices reflect last trading session</div>
+                )}
+                {isWeekend && (
+                  <div className="text-muted-foreground">Weekend — market reopens Monday 9:15 AM IST</div>
+                )}
+              </TooltipContent>
+            </Tooltip>
+
+            {/* Refresh button */}
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  onClick={handleRefresh}
+                  className="h-7 w-7"
+                  data-testid="button-header-refresh"
+                >
+                  <RefreshCw className={`h-3.5 w-3.5 ${status?.loading ? "animate-spin" : ""}`} />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent className="text-xs">Refresh all data</TooltipContent>
+            </Tooltip>
 
             {/* Theme toggle */}
             <Button
@@ -81,4 +162,38 @@ export default function Header() {
       </header>
     </>
   );
+}
+
+// Helper: compute IST time info
+function getIST() {
+  const now = new Date();
+  const istStr = now.toLocaleString("en-IN", { timeZone: "Asia/Kolkata" });
+  const istDate = new Date(now.toLocaleString("en-US", { timeZone: "Asia/Kolkata" }));
+  const hours = istDate.getHours();
+  const mins = istDate.getMinutes();
+  const day = istDate.getDay(); // 0=Sun
+
+  const timeStr = istDate.toLocaleTimeString("en-IN", {
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: true,
+    timeZone: "Asia/Kolkata",
+  });
+
+  const dateStr = istDate.toLocaleDateString("en-IN", {
+    day: "2-digit",
+    month: "short",
+    timeZone: "Asia/Kolkata",
+  });
+
+  const fullDateStr = istDate.toLocaleDateString("en-IN", {
+    weekday: "long",
+    day: "numeric",
+    month: "long",
+    year: "numeric",
+    timeZone: "Asia/Kolkata",
+  });
+
+  return { hours, mins, day, timeStr, dateStr, fullDateStr };
 }
