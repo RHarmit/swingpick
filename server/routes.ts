@@ -394,6 +394,115 @@ export async function registerRoutes(
     }
   });
 
+  // Breakout Radar — stocks most likely to move 5-10% in next 2 days
+  app.get("/api/breakout-radar", async (req, res) => {
+    try {
+      const allStocks = await getAllStocks();
+      if (allStocks.length === 0) return res.json([]);
+
+      // Score each stock for 2-day breakout potential
+      const scored = allStocks.filter(s => s.price > 0 && s.avgVolume > 0).map(s => {
+        // 1. Volume Surge (25%) — unusual volume = institutional interest
+        const volRatio = Math.min(s.volume / Math.max(s.avgVolume, 1), 15);
+        const volumeScore = volRatio >= 3 ? 100 : volRatio >= 2 ? 80 : volRatio >= 1.5 ? 60 : volRatio * 33;
+
+        // 2. Bollinger Squeeze + Breakout (20%) — tight bands about to explode
+        const bbWidth = s.bollingerUpper > 0 && s.bollingerLower > 0
+          ? (s.bollingerUpper - s.bollingerLower) / s.bollingerMiddle * 100
+          : 5;
+        const nearUpper = s.bollingerUpper > 0 ? (s.price / s.bollingerUpper) : 0.5;
+        const bollingerScore = bbWidth < 3 ? 90 : bbWidth < 5 ? 70 : bbWidth < 8 ? 50 : 30;
+        const breakoutBonus = nearUpper >= 0.98 ? 30 : nearUpper >= 0.95 ? 15 : 0;
+
+        // 3. ADX + Momentum Direction (15%) — strong trending stocks
+        const adxScore = s.adx14 >= 30 ? 90 : s.adx14 >= 25 ? 70 : s.adx14 >= 20 ? 50 : s.adx14 * 2.5;
+
+        // 4. RSI Momentum (10%) — not overbought but showing strength
+        const rsiScore = s.rsi14 >= 55 && s.rsi14 <= 75 ? 90 :
+          s.rsi14 >= 45 && s.rsi14 < 55 ? 60 :
+          s.rsi14 < 30 ? 80 : // oversold bounce
+          s.rsi14 > 75 ? 30 : 40;
+
+        // 5. MACD Acceleration (10%) — positive and increasing histogram
+        const macdScore = s.macdHistogram > 0 && s.macdLine > s.macdSignal ? 90 :
+          s.macdHistogram > 0 ? 70 :
+          s.macdHistogram > -0.5 ? 40 : 20;
+
+        // 6. Price vs SMAs (10%) — above 20 & 50 SMA = bullish structure
+        const smaScore = (s.price > s.sma20 ? 35 : 0) + (s.price > s.sma50 ? 35 : 0) + (s.price > s.sma200 ? 30 : 0);
+
+        // 7. MFI Buying Pressure (10%) — smart money flowing in
+        const mfi = s.mfi14 ?? 50;
+        const mfiScore = mfi >= 70 ? 90 : mfi >= 55 ? 70 : mfi >= 40 ? 50 : 30;
+
+        // Composite breakout score
+        const breakoutScore = Math.round(
+          volumeScore * 0.25 +
+          (bollingerScore + breakoutBonus) * 0.20 +
+          adxScore * 0.15 +
+          rsiScore * 0.10 +
+          macdScore * 0.10 +
+          smaScore * 0.10 +
+          mfiScore * 0.10
+        );
+
+        // Estimated move range using ATR
+        const atrPct = s.atr14 / s.price * 100;
+        const estMoveLow = Math.round(atrPct * 1.2 * 10) / 10;
+        const estMoveHigh = Math.round(atrPct * 2.5 * 10) / 10;
+
+        // Direction bias
+        const bullSignals = (s.macdHistogram > 0 ? 1 : 0) + (s.price > s.sma20 ? 1 : 0) +
+          (s.price > s.sma50 ? 1 : 0) + (s.rsi14 > 50 ? 1 : 0) + (mfi > 50 ? 1 : 0);
+        const direction = bullSignals >= 4 ? "bullish" : bullSignals <= 1 ? "bearish" : "either";
+
+        // Confidence (number of aligned signals)
+        const alignedSignals = [
+          volRatio >= 1.5,
+          s.adx14 >= 20,
+          s.macdHistogram > 0,
+          s.price > s.sma20,
+          mfi >= 55,
+          s.rsi14 >= 45 && s.rsi14 <= 75,
+          bbWidth < 8,
+        ].filter(Boolean).length;
+        const confidence = alignedSignals >= 6 ? "high" : alignedSignals >= 4 ? "medium" : "low";
+
+        // Catalysts
+        const catalysts: string[] = [];
+        if (volRatio >= 2) catalysts.push(`Volume ${volRatio.toFixed(1)}x avg`);
+        if (bbWidth < 4) catalysts.push("Bollinger Squeeze");
+        if (nearUpper >= 0.98) catalysts.push("BB Upper Breakout");
+        if (s.adx14 >= 25) catalysts.push(`Strong Trend (ADX ${s.adx14.toFixed(0)})`);
+        if (s.macdHistogram > 0 && s.macdLine > s.macdSignal) catalysts.push("MACD Bullish Cross");
+        if (s.rsi14 < 30) catalysts.push("RSI Oversold Bounce");
+        if (mfi >= 70) catalysts.push("High Buying Pressure");
+        if (s.change2d > 2) catalysts.push(`2-Day Momentum +${s.change2d.toFixed(1)}%`);
+        if (s.patterns.length > 0) catalysts.push(...s.patterns.slice(0, 2));
+
+        return {
+          ...s,
+          breakoutScore,
+          estMoveLow,
+          estMoveHigh,
+          direction,
+          confidence,
+          catalysts,
+          volRatio: Math.round(volRatio * 10) / 10,
+          bbWidth: Math.round(bbWidth * 10) / 10,
+        };
+      });
+
+      // Sort by breakout score, take top 10
+      scored.sort((a, b) => b.breakoutScore - a.breakoutScore);
+      const limit = Number(req.query.limit) || 10;
+      res.json(scored.slice(0, limit));
+    } catch (err) {
+      console.error("Error fetching breakout radar:", err);
+      res.status(500).json({ error: "Failed to fetch breakout radar" });
+    }
+  });
+
   return httpServer;
 }
 // trigger rebuild 1774216471

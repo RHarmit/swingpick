@@ -228,3 +228,90 @@
     font-variant-numeric: tabular-nums lining-nums;
   }
 }
+
+/* ─── SwingPick UI Enhancements ─── */
+
+/* Animated gradient for the header accent */
+@keyframes gradient-shift {
+  0%, 100% { background-position: 0% 50%; }
+  50% { background-position: 100% 50%; }
+}
+
+.animated-gradient {
+  background: linear-gradient(135deg, hsl(var(--primary)), hsl(262 83% 58%), hsl(var(--primary)));
+  background-size: 200% 200%;
+  animation: gradient-shift 6s ease-in-out infinite;
+}
+
+/* Subtle glow effect for high-score items */
+@keyframes subtle-glow {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(59, 130, 246, 0); }
+  50% { box-shadow: 0 0 12px 2px rgba(59, 130, 246, 0.08); }
+}
+
+.glow-pulse {
+  animation: subtle-glow 3s ease-in-out infinite;
+}
+
+/* Smooth card hover lift */
+.card-hover-lift {
+  transition: transform 0.25s ease, box-shadow 0.25s ease;
+}
+.card-hover-lift:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 8px 24px -8px rgba(0, 0, 0, 0.12);
+}
+.dark .card-hover-lift:hover {
+  box-shadow: 0 8px 24px -8px rgba(0, 0, 0, 0.4);
+}
+
+/* Tab indicator animation */
+.tab-active {
+  position: relative;
+}
+.tab-active::after {
+  content: '';
+  position: absolute;
+  bottom: -5px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 60%;
+  height: 2px;
+  background: hsl(var(--primary));
+  border-radius: 1px;
+}
+
+/* Live market ticker pulse */
+@keyframes market-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+.market-pulse {
+  animation: market-pulse 2s ease-in-out infinite;
+}
+
+/* Score ring animation on load */
+@keyframes score-fill {
+  from { stroke-dashoffset: inherit; }
+}
+
+/* Frosted glass panels */
+.glass-panel {
+  backdrop-filter: blur(12px) saturate(1.8);
+  -webkit-backdrop-filter: blur(12px) saturate(1.8);
+}
+
+/* Scrollbar styling */
+.scrollbar-thin::-webkit-scrollbar {
+  height: 4px;
+}
+.scrollbar-thin::-webkit-scrollbar-track {
+  background: transparent;
+}
+.scrollbar-thin::-webkit-scrollbar-thumb {
+  background: hsl(var(--muted-foreground) / 0.2);
+  border-radius: 2px;
+}
+.scrollbar-thin::-webkit-scrollbar-thumb:hover {
+  background: hsl(var(--muted-foreground) / 0.4);
+}

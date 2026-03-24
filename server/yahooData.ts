@@ -1,8 +1,10 @@
 import type { Stock, PricePoint, SectorPerformance } from "@shared/schema";
-import YahooFinance from "yahoo-finance2";
+import YahooFinanceModule from "yahoo-finance2";
 
 // yahoo-finance2 v3 requires instantiation
-const yf = new (YahooFinance as any)({ suppressNotices: ["yahooSurvey"] });
+// Handle both ESM default import (tsx) and CJS require (esbuild bundle)
+const YahooFinanceCls = (YahooFinanceModule as any).default ?? YahooFinanceModule;
+const yf = new YahooFinanceCls({ suppressNotices: ["yahooSurvey"] });
 function getYF(): any {
   return yf;
 }

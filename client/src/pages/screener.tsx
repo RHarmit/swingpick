@@ -4,7 +4,7 @@ import { useQuery } from "@tanstack/react-query";
 import {
   ArrowUpDown, ArrowUp, ArrowDown, Filter, X, ChevronDown, ChevronRight,
   TrendingUp, TrendingDown, Activity, BarChart3, Search, SlidersHorizontal, RefreshCw,
-  Star, Brain, Newspaper, Zap, Crown, ChevronLeft, Grid3X3, Target, DollarSign
+  Star, Brain, Newspaper, Zap, Crown, ChevronLeft, Grid3X3, Target, DollarSign, Crosshair
 } from "lucide-react";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -28,6 +28,7 @@ import HedgePicks from "@/pages/hedge-picks";
 import MarketSentiment from "@/pages/market-sentiment";
 import MarketNews from "@/pages/market-news";
 import ExplosivePicks from "@/pages/explosive-picks";
+import BreakoutRadar from "@/pages/breakout-radar";
 
 type SortField = "combinedScore" | "swingScore" | "fundamentalScore" | "sentimentScore" | "changePct" | "rsi14" | "volume" | "price" | "marketCap" | "adx14" | "atr14" | "change2d" | "mfi14" | "mfiChange";
 type SortOrder = "asc" | "desc";
@@ -123,7 +124,7 @@ function computeEntryExit(stock: Stock): { entry: number; target: number; stopLo
 }
 
 export default function Screener() {
-  const [activeTab, setActiveTab] = useState<"screener" | "heatmap" | "momentum" | "hedge" | "sentiment" | "news" | "explosive">("screener");
+  const [activeTab, setActiveTab] = useState<"screener" | "heatmap" | "momentum" | "hedge" | "sentiment" | "news" | "explosive" | "breakout">("screener");
   const [search, setSearch] = useState("");
   const [showFilters, setShowFilters] = useState(false);
   const [sortBy, setSortBy] = useState<SortField>("combinedScore");
@@ -424,6 +425,16 @@ export default function Screener() {
             News
           </Button>
           <Button
+            variant={activeTab === "breakout" ? "secondary" : "ghost"}
+            size="sm"
+            className="gap-1.5 text-xs h-8 shrink-0 relative"
+            onClick={() => setActiveTab("breakout")}
+          >
+            <Crosshair className="w-3.5 h-3.5" />
+            Breakout Radar
+            <span className="absolute -top-1 -right-1 w-2 h-2 rounded-full bg-primary animate-pulse" />
+          </Button>
+          <Button
             variant={activeTab === "explosive" ? "secondary" : "ghost"}
             size="sm"
             className="gap-1.5 text-xs h-8 shrink-0"
@@ -471,6 +482,13 @@ export default function Screener() {
           </>
         )}
 
+        {activeTab === "breakout" && (
+          <>
+            <BreakoutRadar />
+            <PerplexityAttribution className="mt-6 mb-4" />
+          </>
+        )}
+
         {activeTab === "explosive" && (
           <>
             <ExplosivePicks />
@@ -492,7 +510,7 @@ export default function Screener() {
               {topStocks.slice(0, 10).map((stock, i) => (
                 <Link key={stock.symbol} href={`/stock/${stock.symbol}`}>
                   <Card
-                    className="p-2.5 min-w-[160px] border-card-border hover:bg-muted/40 transition-colors cursor-pointer shrink-0"
+                    className="p-2.5 min-w-[160px] border-card-border hover:bg-muted/40 transition-all cursor-pointer shrink-0 card-hover-lift"
                     data-testid={`card-top-stock-${stock.symbol}`}
                   >
                     <div className="flex items-start justify-between mb-1.5">
@@ -534,24 +552,36 @@ export default function Screener() {
 
         {/* KPI Row */}
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
-          <Card className="p-3 border-card-border">
-            <div className="text-xs text-muted-foreground mb-1">Stocks Screened</div>
+          <Card className="p-3 border-card-border card-hover-lift">
+            <div className="flex items-center gap-1.5 mb-1">
+              <Activity className="w-3 h-3 text-primary" />
+              <span className="text-xs text-muted-foreground">Stocks Screened</span>
+            </div>
             <div className="text-xl font-semibold tabular-nums" data-testid="text-total-count">{filteredStocks.length}</div>
           </Card>
-          <Card className="p-3 border-card-border">
-            <div className="text-xs text-muted-foreground mb-1">Bullish (Combined)</div>
+          <Card className="p-3 border-card-border card-hover-lift">
+            <div className="flex items-center gap-1.5 mb-1">
+              <TrendingUp className="w-3 h-3 text-emerald-500" />
+              <span className="text-xs text-muted-foreground">Bullish (Combined)</span>
+            </div>
             <div className="text-xl font-semibold tabular-nums text-emerald-600 dark:text-emerald-400" data-testid="text-bullish-count">
               {bullishCount}
             </div>
           </Card>
-          <Card className="p-3 border-card-border">
-            <div className="text-xs text-muted-foreground mb-1">Bearish (Combined)</div>
+          <Card className="p-3 border-card-border card-hover-lift">
+            <div className="flex items-center gap-1.5 mb-1">
+              <TrendingDown className="w-3 h-3 text-red-500" />
+              <span className="text-xs text-muted-foreground">Bearish (Combined)</span>
+            </div>
             <div className="text-xl font-semibold tabular-nums text-red-500" data-testid="text-bearish-count">
               {bearishCount}
             </div>
           </Card>
-          <Card className="p-3 border-card-border">
-            <div className="text-xs text-muted-foreground mb-1">Avg Combined Score</div>
+          <Card className="p-3 border-card-border card-hover-lift">
+            <div className="flex items-center gap-1.5 mb-1">
+              <Zap className="w-3 h-3 text-amber-500" />
+              <span className="text-xs text-muted-foreground">Avg Combined Score</span>
+            </div>
             <div className="text-xl font-semibold tabular-nums" data-testid="text-avg-score">{avgCombinedScore}</div>
           </Card>
         </div>
@@ -1056,7 +1086,7 @@ const StockRow = memo(function StockRow({ stock }: { stock: Stock }) {
   const { entry, target, stopLoss } = computeEntryExit(stock);
   return (
     <tr
-      className="border-b border-border/50 hover:bg-muted/40 transition-colors cursor-pointer"
+      className="border-b border-border/50 hover:bg-muted/40 transition-all duration-200 cursor-pointer hover:shadow-sm"
       data-testid={`row-stock-${stock.symbol}`}
     >
       <td className="py-2.5 px-3">
@@ -1132,7 +1162,7 @@ const MobileStockCard = memo(function MobileStockCard({ stock }: { stock: Stock 
   const { entry, target, stopLoss } = computeEntryExit(stock);
   return (
     <Link href={`/stock/${stock.symbol}`}>
-      <Card className="p-3 border-card-border hover:bg-muted/40 transition-colors cursor-pointer" data-testid={`card-stock-${stock.symbol}`}>
+      <Card className="p-3 border-card-border hover:bg-muted/40 transition-all duration-200 cursor-pointer card-hover-lift" data-testid={`card-stock-${stock.symbol}`}>
         <div className="flex items-start justify-between mb-2">
           <div>
             <div className="font-semibold text-sm">{stock.symbol}</div>
@@ -1211,7 +1241,7 @@ function SectorPerformanceBar({ sectors, onSectorClick }: { sectors: SectorPerfo
           return (
             <Card
               key={sp.sector}
-              className="p-2.5 border-card-border hover:bg-muted/40 transition-colors cursor-pointer"
+              className="p-2.5 border-card-border hover:bg-muted/40 transition-all cursor-pointer card-hover-lift"
               onClick={() => onSectorClick(sp.sector)}
               data-testid={`card-sector-${sp.sector}`}
             >

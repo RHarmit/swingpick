@@ -1,8 +1,8 @@
 import { QueryClient, QueryFunction } from "@tanstack/react-query";
 
-// Use Render backend for production static deploy, empty for local dev
+// Always use Render backend for production — keeps data alive independent of session
 const RENDER_URL = "https://swingpick.onrender.com";
-const API_BASE = window.location.hostname === "localhost" ? "" : RENDER_URL;
+const API_BASE = window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1" ? "" : RENDER_URL;
 
 async function throwIfResNotOk(res: Response) {
   if (!res.ok) {
