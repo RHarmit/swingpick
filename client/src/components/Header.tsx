@@ -167,13 +167,24 @@ export default function Header() {
 // Helper: compute IST time info
 function getIST() {
   const now = new Date();
-  const istStr = now.toLocaleString("en-IN", { timeZone: "Asia/Kolkata" });
-  const istDate = new Date(now.toLocaleString("en-US", { timeZone: "Asia/Kolkata" }));
-  const hours = istDate.getHours();
-  const mins = istDate.getMinutes();
-  const day = istDate.getDay(); // 0=Sun
+  
+  // Use Intl to extract IST components reliably
+  const fmt = new Intl.DateTimeFormat("en-US", {
+    timeZone: "Asia/Kolkata",
+    hour: "numeric", minute: "numeric", second: "numeric",
+    weekday: "short", day: "numeric", month: "short", year: "numeric",
+    hour12: false,
+  });
+  const parts = Object.fromEntries(
+    fmt.formatToParts(now).map(p => [p.type, p.value])
+  );
+  
+  const hours = parseInt(parts.hour || "0");
+  const mins = parseInt(parts.minute || "0");
+  const dayNames: Record<string, number> = { Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 };
+  const day = dayNames[parts.weekday || "Mon"] ?? 1;
 
-  const timeStr = istDate.toLocaleTimeString("en-IN", {
+  const timeStr = now.toLocaleTimeString("en-IN", {
     hour: "2-digit",
     minute: "2-digit",
     second: "2-digit",
@@ -181,13 +192,13 @@ function getIST() {
     timeZone: "Asia/Kolkata",
   });
 
-  const dateStr = istDate.toLocaleDateString("en-IN", {
+  const dateStr = now.toLocaleDateString("en-IN", {
     day: "2-digit",
     month: "short",
     timeZone: "Asia/Kolkata",
   });
 
-  const fullDateStr = istDate.toLocaleDateString("en-IN", {
+  const fullDateStr = now.toLocaleDateString("en-IN", {
     weekday: "long",
     day: "numeric",
     month: "long",
